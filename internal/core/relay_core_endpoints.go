@@ -249,7 +249,7 @@ func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.
 				}
 				flusher.Flush()
 			case <-heartbeat:
-				_, err := w.Write([]byte(":\n\n"))
+				_, err := w.Write([]byte(":\n"))
 				if err != nil {
 					loggers.Debug("hes dead jim")
 					return
