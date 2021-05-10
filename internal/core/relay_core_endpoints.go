@@ -211,25 +211,32 @@ func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.
 			return err == nil
 		}
 
-		update, heartbeat, closech := clientCtx.Env.GetUserStreamChannel(streamProvider, clientCtx.Credential)
-		forceClosed := false
-		cleanup := func() {
-			clientCtx.Env.GetLoggers().Debug("byeeeee")
-			// if we got a close message the channel is gone
-			if !forceClosed {
-				closech <- struct{}{}
-			}
-		}
-		defer cleanup()
 		loggers := clientCtx.Env.GetLoggers()
+		/// eval first so init gets sent down asap
 		if !eval(withReasons) {
 			loggers.Warn("oh no...first eval failed. bye now")
 			return
 		}
+
 		firstRun = false
 		flusher := w.(http.Flusher)
 		flusher.Flush()
 		closeNotify := req.Context().Done()
+
+		update, heartbeat, closech := clientCtx.Env.GetUserStreamChannel(streamProvider, clientCtx.Credential)
+
+		cleanup := func() {
+			clientCtx.Env.GetLoggers().Debug("byeeeee")
+			// close in the channel if it hasnt closed already
+			select {
+			case _, ok := <-closech:
+				if ok {
+					close(closech)
+				}
+			default:
+			}
+		}
+		defer cleanup()
 
 		for {
 			select {
@@ -249,7 +256,6 @@ func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.
 				}
 				flusher.Flush()
 			case <-closech:
-				forceClosed = true
 				return
 
 			}

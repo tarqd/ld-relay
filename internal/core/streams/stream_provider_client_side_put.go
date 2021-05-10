@@ -44,11 +44,13 @@ type PutStreamClient struct {
 func newPutStreamProvider(isJSClient bool) StreamProvider {
 	provider := clientSidePutStreamProvider{
 		isJSClient: isJSClient,
-		sub:        make(chan PutStreamClient),
-		unsub:      make(chan PutStreamClient),
-		heartbeat:  make(chan struct{}),
-		update:     make(chan struct{}, 5),
-		shutdown:   make(chan struct{}),
+		// buffer subs so that bursts of new clients
+		// dont hang as much
+		sub:       make(chan PutStreamClient, 255),
+		unsub:     make(chan PutStreamClient),
+		heartbeat: make(chan struct{}),
+		update:    make(chan struct{}, 5),
+		shutdown:  make(chan struct{}),
 	}
 	provider.start()
 	return &provider
