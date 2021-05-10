@@ -62,7 +62,7 @@ func (s *clientSidePingStreamProvider) Register(
 	}
 	return nil
 }
-func (s *clientSidePingStreamProvider) RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int) {
+func (s *clientSidePingStreamProvider) RegisterClient(credential config.SDKCredential) (update chan struct{}, heartbeat chan struct{}, close chan struct{}) {
 	return nil, nil, nil
 }
 func (s *clientSidePingStreamProvider) Close() {

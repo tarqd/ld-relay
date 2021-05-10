@@ -396,7 +396,7 @@ func (c *envContextImpl) GetStreamHandler(streamProvider streams.StreamProvider,
 	}
 	return h
 }
-func (c *envContextImpl) GetUserStreamChannel(streamProvider streams.StreamProvider, credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int) {
+func (c *envContextImpl) GetUserStreamChannel(streamProvider streams.StreamProvider, credential config.SDKCredential) (update chan struct{}, heartbeat chan struct{}, close chan struct{}) {
 	return streamProvider.RegisterClient(credential)
 }
 func invalidStreamHandler(w http.ResponseWriter, req *http.Request) {

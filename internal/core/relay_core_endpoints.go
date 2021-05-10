@@ -202,6 +202,11 @@ func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.
 			}
 			_, _ = w.Write([]byte("event:put\ndata:"))
 			_, _ = w.Write(responseWriter.Bytes())
+			if firstRun {
+				// extra the heartbeat because the saas seems to do this
+				// boop
+				_, _ = w.Write([]byte("\n\n:"))
+			}
 			_, err = w.Write([]byte("\n\n"))
 			return err == nil
 		}
@@ -212,7 +217,7 @@ func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.
 			clientCtx.Env.GetLoggers().Debug("byeeeee")
 			// if we got a close message the channel is gone
 			if !forceClosed {
-				closech <- 1
+				closech <- struct{}{}
 			}
 		}
 		defer cleanup()

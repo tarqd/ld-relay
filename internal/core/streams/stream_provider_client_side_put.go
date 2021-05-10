@@ -17,32 +17,28 @@ type clientSidePutStreamProvider struct {
 	isJSClient bool
 	sub        chan PutStreamClient
 	unsub      chan PutStreamClient
-	heartbeat  chan int
-	update     chan int
-	shutdown   chan int
+	heartbeat  chan struct{}
+	update     chan struct{}
+	shutdown   chan struct{}
 	store      EnvStoreQueries
 	closeOnce  sync.Once
 }
 
 type clientSidePutEnvStreamProvider struct {
 	store     EnvStoreQueries
-	heartbeat chan int
-	update    chan int
-	shutdown  chan int
+	heartbeat chan struct{}
+	update    chan struct{}
+	shutdown  chan struct{}
 }
 
 type clientSidePutEnvStreamRepository struct {
 	store EnvStoreQueries
 }
 
-const UPDATE = 0
-const HEARTBEAT = 1
-const SHUTDOWN = 2
-
 type PutStreamClient struct {
-	update    chan int
-	heartbeat chan int
-	close     chan int
+	update    chan struct{}
+	heartbeat chan struct{}
+	close     chan struct{}
 }
 
 func newPutStreamProvider(isJSClient bool) StreamProvider {
@@ -50,9 +46,9 @@ func newPutStreamProvider(isJSClient bool) StreamProvider {
 		isJSClient: isJSClient,
 		sub:        make(chan PutStreamClient),
 		unsub:      make(chan PutStreamClient),
-		heartbeat:  make(chan int),
-		update:     make(chan int, 5),
-		shutdown:   make(chan int),
+		heartbeat:  make(chan struct{}),
+		update:     make(chan struct{}, 5),
+		shutdown:   make(chan struct{}),
 	}
 	provider.start()
 	return &provider
@@ -86,11 +82,11 @@ func (s *clientSidePutStreamProvider) start() {
 				close(client.close)
 			case <-s.update:
 				for client := range clients {
-					client.update <- 1
+					client.update <- struct{}{}
 				}
 			case <-s.heartbeat:
 				for client := range clients {
-					client.heartbeat <- 1
+					client.heartbeat <- struct{}{}
 				}
 			case <-s.shutdown:
 				break LOOP
@@ -113,13 +109,13 @@ func (s *clientSidePutStreamProvider) start() {
 
 }
 
-func (s *clientSidePutStreamProvider) RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int) {
+func (s *clientSidePutStreamProvider) RegisterClient(credential config.SDKCredential) (update chan struct{}, heartbeat chan struct{}, close chan struct{}) {
 	if key := s.validateCredential(credential); key != "" {
 		c := PutStreamClient{
 			// idk if these are good buffer sizes
-			update:    make(chan int, 2),
-			heartbeat: make(chan int, 2),
-			close:     make(chan int, 1),
+			update:    make(chan struct{}, 5),
+			heartbeat: make(chan struct{}, 5),
+			close:     make(chan struct{}, 1),
 		}
 		s.sub <- c
 		// i couldnt get route_core_endpoints.go to see putstreamclient as a type
@@ -173,17 +169,17 @@ func (s *clientSidePutStreamProvider) Close() {
 }
 
 func (e *clientSidePutEnvStreamProvider) SendAllDataUpdate(allData []ldstoretypes.Collection) {
-	e.update <- 1
+	e.update <- struct{}{}
 }
 
 func (e *clientSidePutEnvStreamProvider) SendSingleItemUpdate(kind ldstoretypes.DataKind, key string, item ldstoretypes.ItemDescriptor) {
-	e.update <- 1
+	e.update <- struct{}{}
 }
 
 func (e *clientSidePutEnvStreamProvider) SendHeartbeat() {
-	e.heartbeat <- 1
+	e.heartbeat <- struct{}{}
 }
 
 func (e *clientSidePutEnvStreamProvider) Close() {
-	e.shutdown <- 1
+	e.shutdown <- struct{}{}
 }

@@ -32,7 +32,7 @@ type StreamProvider interface {
 	// Register tells the StreamProvider about an environment that it should support, and returns an
 	// implementation of EnvStreamsUpdates for pushing updates related to that environment. It can
 	// return nil if it does not support this type of credential.
-	RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int)
+	RegisterClient(credential config.SDKCredential) (update chan struct{}, heartbeat chan struct{}, close chan struct{})
 
 	// Close tells the StreamProvider to release all of its resources and close all connections.
 	Close()
