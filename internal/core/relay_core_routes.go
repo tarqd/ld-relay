@@ -99,7 +99,7 @@ func (r *RelayCore) MakeRouter() *mux.Router {
 
 	mobileStreamRouter := router.PathPrefix("/meval").Subrouter()
 	mobileStreamRouter.Use(mobileMiddlewareStack, middleware.Streaming)
-	mobilePingWithUser := pingStreamHandlerWithUser(basictypes.MobileSDK, r.mobileStreamProvider)
+	mobilePingWithUser := clientPutStreamWithUser(basictypes.MobileSDK, r.mobileStreamProvider)
 	mobileStreamRouter.Handle("", middleware.CountMobileConns(mobilePingWithUser)).Methods("REPORT")
 	mobileStreamRouter.Handle("/{user}", middleware.CountMobileConns(mobilePingWithUser)).Methods("GET")
 
@@ -107,7 +107,7 @@ func (r *RelayCore) MakeRouter() *mux.Router {
 		middleware.CountMobileConns(middleware.Streaming(pingStreamHandler(r.mobileStreamProvider))))).Methods("GET")
 
 	jsPing := pingStreamHandler(r.jsClientStreamProvider)
-	jsPingWithUser := pingStreamHandlerWithUser(basictypes.JSClientSDK, r.jsClientStreamProvider)
+	jsPingWithUser := clientPutStreamWithUser(basictypes.JSClientSDK, r.jsClientStreamProvider)
 
 	clientSidePingRouter := router.PathPrefix("/ping/{envId}").Subrouter()
 	clientSidePingRouter.Use(clientSideMiddlewareStack, mux.CORSMethodMiddleware(clientSidePingRouter), middleware.Streaming)

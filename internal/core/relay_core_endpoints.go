@@ -94,9 +94,164 @@ func pingStreamHandlerWithUser(sdkKind basictypes.SDKKind, streamProvider stream
 		clientCtx.Env.GetLoggers().Debug("Application requested client-side ping stream")
 
 		if _, ok := getClientSideUserProperties(clientCtx.Env, sdkKind, req, w); ok {
+
 			clientCtx.Env.GetStreamHandler(streamProvider, clientCtx.Credential).ServeHTTP(w, req)
 		}
 	})
+}
+
+func clientPutStreamWithUser(sdkKind basictypes.SDKKind, streamProvider streams.StreamProvider) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		clientCtx := middleware.GetEnvContextInfo(req.Context())
+		withReasons := req.URL.Query().Get("withReasons") == "true"
+		firstRun := true
+		eval := func(withReasons bool) bool {
+			clientCtx := middleware.GetEnvContextInfo(req.Context())
+			client := clientCtx.Env.GetClient()
+
+			store := clientCtx.Env.GetStore()
+			loggers := clientCtx.Env.GetLoggers()
+			clientCtx.Env.GetLoggers().Debug("in eval")
+			user, ok := getClientSideUserProperties(clientCtx.Env, sdkKind, req, w)
+			if !ok {
+				clientCtx.Env.GetLoggers().Debug("failed to get user")
+				return false
+			}
+			clientCtx.Env.GetLoggers().Debug("Application requested client-side ping stream")
+
+			if !client.Initialized() {
+				if store.IsInitialized() {
+					loggers.Warn("Called before client initialization; using last known values from feature store")
+				} else {
+					loggers.Warn("Called before client initialization. Feature store not available")
+					if firstRun {
+						w.WriteHeader(http.StatusServiceUnavailable)
+
+					}
+					// just bail so the client has a chance to hit another endpoint for flags
+					_, _ = w.Write(util.ErrorJSONMsg("Service not initialized"))
+					return false
+				}
+			}
+
+			if user.GetKey() == "" {
+				if firstRun {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write(util.ErrorJSONMsg("User must have a 'key' attribute"))
+				}
+				return false
+			}
+
+			loggers.Debugf("Application requested client-side flags (%s) for user: %s", sdkKind, user.GetKey())
+
+			evaluator := ldeval.NewEvaluator(ldstoreimpl.NewDataStoreEvaluatorDataProvider(store, loggers))
+			items, err := store.GetAll(ldstoreimpl.Features())
+			if err != nil {
+				// at this point the client was initialized at some point
+				// but we can't reach the feature store right now
+				// we could return true just in case it comes back
+				// but other relays might have a copy of the flags
+				// so im going to bail
+				loggers.Debugf("failed to get flags from store (%s) for user: %s", sdkKind, user.GetKey())
+				return false
+			}
+
+			responseWriter := jwriter.NewWriter()
+			responseObj := responseWriter.Object()
+
+			for _, item := range items {
+				if flag, ok := item.Item.Item.(*ldmodel.FeatureFlag); ok {
+					switch sdkKind {
+					case basictypes.JSClientSDK:
+						if !flag.ClientSideAvailability.UsingEnvironmentID {
+							continue
+						}
+					case basictypes.MobileSDK:
+						if !flag.ClientSideAvailability.UsingMobileKey {
+							continue
+						}
+					}
+					detail := evaluator.Evaluate(flag, user, nil)
+					// idk what this is for so i just no-opped it for now
+					if false {
+						detail.Value.WriteToJSONWriter(responseObj.Name(flag.Key))
+					} else {
+						isExperiment := flag.IsExperimentationEnabled(detail.Reason)
+						valueObj := responseObj.Name(flag.Key).Object()
+						detail.Value.WriteToJSONWriter(valueObj.Name("value"))
+						detail.VariationIndex.WriteToJSONWriter(valueObj.Name("variation"))
+						valueObj.Name("version").Int(flag.Version)
+						valueObj.Maybe("trackEvents", flag.TrackEvents || isExperiment).Bool(true)
+						valueObj.Maybe("trackReason", isExperiment).Bool(true)
+						if withReasons || isExperiment {
+							detail.Reason.WriteToJSONWriter(valueObj.Name("reason"))
+						}
+						valueObj.Maybe("debugEventsUntilDate", flag.DebugEventsUntilDate != 0).
+							Float64(float64(flag.DebugEventsUntilDate))
+						valueObj.End()
+					}
+				}
+			}
+			responseObj.End()
+			if firstRun {
+				headers := w.Header()
+				headers.Set("Content-Type", "text/event-stream; charset=utf-8")
+				headers.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				headers.Set("Connection", "keep-alive")
+				w.WriteHeader(http.StatusOK)
+			}
+			_, _ = w.Write([]byte("event:put\ndata:"))
+			_, _ = w.Write(responseWriter.Bytes())
+			_, err = w.Write([]byte("\n\n"))
+			return err == nil
+		}
+
+		update, heartbeat, closech := clientCtx.Env.GetUserStreamChannel(streamProvider, clientCtx.Credential)
+		forceClosed := false
+		cleanup := func() {
+			clientCtx.Env.GetLoggers().Debug("byeeeee")
+			// if we got a close message the channel is gone
+			if !forceClosed {
+				closech <- 1
+			}
+		}
+		defer cleanup()
+		loggers := clientCtx.Env.GetLoggers()
+		if !eval(withReasons) {
+			loggers.Warn("oh no...first eval failed. bye now")
+			return
+		}
+		firstRun = false
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		closeNotify := req.Context().Done()
+
+		for {
+			select {
+			case <-closeNotify:
+				return
+			case <-update:
+				if !eval(withReasons) {
+					loggers.Debug("eval failed im sorry :(")
+					return
+				}
+				flusher.Flush()
+			case <-heartbeat:
+				_, err := w.Write([]byte(":\n\n"))
+				if err != nil {
+					loggers.Debug("hes dead jim")
+					return
+				}
+				flusher.Flush()
+			case <-closech:
+				forceClosed = true
+				return
+
+			}
+		}
+
+	})
+
 }
 
 // Multi-purpose streaming handler; all details of the behavior of the particular type of stream are

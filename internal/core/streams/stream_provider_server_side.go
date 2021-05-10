@@ -49,6 +49,9 @@ func (s *serverSideStreamProvider) Register(
 	}
 	return nil
 }
+func (s *serverSideStreamProvider) RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int) {
+	return nil, nil, nil
+}
 
 func (s *serverSideStreamProvider) Close() {
 	s.closeOnce.Do(func() {

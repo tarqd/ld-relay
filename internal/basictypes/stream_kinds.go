@@ -21,4 +21,7 @@ const (
 	// "ping" events. This is identical to MobilePingStream except that it only handles requests
 	// authenticated with an environment ID.
 	JSClientPingStream StreamKind = "js-ping"
+
+	MobilePutStream   StreamKind = "mobile-put"
+	JSClientPutStream StreamKind = "js-put"
 )

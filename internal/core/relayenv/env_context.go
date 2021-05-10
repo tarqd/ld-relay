@@ -70,6 +70,7 @@ type EnvContext interface {
 	// GetHandler returns the HTTP handler for the specified kind of stream requests and credential for this
 	// environment. If there is none, it returns a handler for a 404 status (not nil).
 	GetStreamHandler(streams.StreamProvider, config.SDKCredential) http.Handler
+	GetUserStreamChannel(streams.StreamProvider, config.SDKCredential) (update chan int, heartbeat chan int, close chan int)
 
 	// GetEventDispatcher returns the object that proxies events for this environment.
 	GetEventDispatcher() *events.EventDispatcher

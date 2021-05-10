@@ -35,7 +35,9 @@ func (s *serverSideFlagsOnlyStreamProvider) Handler(credential config.SDKCredent
 	}
 	return nil
 }
-
+func (s *serverSideFlagsOnlyStreamProvider) RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int) {
+	return nil, nil, nil
+}
 func (s *serverSideFlagsOnlyStreamProvider) Register(
 	credential config.SDKCredential,
 	store EnvStoreQueries,

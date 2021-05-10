@@ -29,6 +29,11 @@ type StreamProvider interface {
 	// return nil if it does not support this type of credential.
 	Register(credential config.SDKCredential, store EnvStoreQueries, loggers ldlog.Loggers) EnvStreamProvider
 
+	// Register tells the StreamProvider about an environment that it should support, and returns an
+	// implementation of EnvStreamsUpdates for pushing updates related to that environment. It can
+	// return nil if it does not support this type of credential.
+	RegisterClient(credential config.SDKCredential) (update chan int, heartbeat chan int, close chan int)
+
 	// Close tells the StreamProvider to release all of its resources and close all connections.
 	Close()
 }
@@ -62,6 +67,10 @@ func NewStreamProvider(kind basictypes.StreamKind, maxConnTime time.Duration) St
 			server:     newSSEServer(maxConnTime),
 			isJSClient: true,
 		}
+	case basictypes.MobilePutStream:
+		return newPutStreamProvider(false)
+	case basictypes.JSClientPutStream:
+		return newPutStreamProvider(true)
 	default:
 		return &serverSideStreamProvider{
 			server: newSSEServer(maxConnTime),
