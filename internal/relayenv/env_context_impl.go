@@ -1,6 +1,7 @@
 package relayenv
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/launchdarkly/ld-relay/v9/config"
 	"github.com/launchdarkly/ld-relay/v9/internal/bigsegments"
 	"github.com/launchdarkly/ld-relay/v9/internal/events"
+	"github.com/launchdarkly/ld-relay/v9/internal/health"
 	"github.com/launchdarkly/ld-relay/v9/internal/httpconfig"
 	"github.com/launchdarkly/ld-relay/v9/internal/sdks"
 	"github.com/launchdarkly/ld-relay/v9/internal/streams"
@@ -111,6 +113,7 @@ type envContextImpl struct {
 	metricsManager            *metrics.Manager
 	metricsEnv                *metrics.EnvironmentManager
 	metricsEventPub           events.EventPublisher
+	healthEvaluator           health.Evaluator
 	dataStoreInfo             sdks.DataStoreEnvironmentInfo
 	globalLogger              *slog.Logger
 	ttl                       time.Duration
@@ -179,6 +182,7 @@ func NewEnvContext(
 		sdkClientFactory:          params.ClientFactory,
 		sdkInitTimeout:            allConfig.Main.InitTimeout.GetOrElse(config.DefaultInitTimeout),
 		metricsManager:            params.MetricsManager,
+		healthEvaluator:           health.NewEvaluator(allConfig.Main),
 		globalLogger:              params.Logger,
 		ttl:                       envConfig.TTL.GetOrElse(0),
 		dataStoreInfo:             params.DataStoreInfo,
@@ -285,41 +289,16 @@ func NewEnvContext(
 	baseURI := allConfig.Main.BaseURI.String()
 	eventsURI := allConfig.Events.EventsURI.String() // ditto
 
-	// Unlike our SDKs, the relay proxy does not provide an option to disable
-	// diagnostic events. However, we must still honor the offline mode where 0
-	// outbound connections will be made.
-	enableDiagnostics := !offlineMode
-	var em *metrics.EnvironmentManager
-	if params.MetricsManager != nil {
-		if enableDiagnostics {
-			eventsPublisher, err := events.NewHTTPEventPublisher(envConfig.SDKKey, httpConfig, envLogger,
-				events.OptionBaseURI(eventsURI))
-			if err != nil {
-				return nil, errInitPublisher(err)
-			}
-			thingsToCleanUp.AddFunc(eventsPublisher.Close)
-			envContext.metricsEventPub = eventsPublisher
-		}
-
-		em, err = params.MetricsManager.AddEnvironment(params.Identifiers.GetDisplayName(), envContext.metricsEventPub)
-		if err != nil {
-			return nil, errInitMetrics(err)
-		}
-
-		thingsToCleanUp.AddFunc(func() { params.MetricsManager.RemoveEnvironment(em) })
-
-		params.MetricsManager.AddEnvironmentForUsage(params.Identifiers.GetDisplayName(), envContext.metricsEventPub)
-		thingsToCleanUp.AddFunc(func() { params.MetricsManager.RemoveEnvironmentForUsage(params.Identifiers.GetDisplayName()) })
+	if err := envContext.setupMetrics(params, envConfig, httpConfig, envLogger, eventsURI, offlineMode, &thingsToCleanUp); err != nil {
+		return nil, err
 	}
-
-	envContext.metricsEnv = em
 
 	// Create an EventMetrics recorder for the event dispatchers to use when reporting
 	// internal metrics like dropped events. This must be done after the EnvironmentManager
 	// is created so we have access to the environment-level OTEL attributes.
 	var eventMetrics events.EventMetrics
-	if em != nil {
-		eventMetrics = em.NewEventMetricsRecorder(params.MetricsManager.GetInstruments())
+	if envContext.metricsEnv != nil {
+		eventMetrics = envContext.metricsEnv.NewEventMetricsRecorder(params.MetricsManager.GetInstruments())
 	}
 
 	var eventDispatcher *events.EventDispatcher
@@ -370,7 +349,7 @@ func NewEnvContext(
 		LDRelayDataDestination: func(ro subsystems.ReadOnlyDataStore, changeSetUpdates <-chan subsystems.ChangeSet) {
 			wrapper.SetDataSystemPieces(ro, changeSetUpdates)
 		},
-		DiagnosticOptOut: !enableDiagnostics,
+		DiagnosticOptOut: offlineMode, // diagnostics are always enabled except in offline mode
 		Events:           ldcomponents.SendEvents().EnableGzip(true),
 		HTTP:             httpConfig.SDKHTTPConfigFactory,
 		Logging: ldcomponents.Logging().
@@ -515,6 +494,53 @@ func (c *envContextImpl) removeCredential(oldCredential credential.SDKCredential
 	}
 }
 
+// setupMetrics configures the per-environment metrics integration: the diagnostic event
+// publisher (unless in offline mode), the metrics EnvironmentManager carrying this
+// environment's attributes, the health metrics callback, and usage tracking. It is a no-op
+// when there is no metrics manager.
+func (c *envContextImpl) setupMetrics(params EnvContextImplParams, envConfig config.EnvConfig,
+	httpConfig httpconfig.HTTPConfig, envLogger *slog.Logger, eventsURI string, offlineMode bool,
+	thingsToCleanUp *util.CleanupTasks) error {
+	if params.MetricsManager == nil {
+		return nil
+	}
+
+	// Unlike our SDKs, the relay proxy does not provide an option to disable
+	// diagnostic events. However, we must still honor the offline mode where 0
+	// outbound connections will be made.
+	if !offlineMode {
+		eventsPublisher, err := events.NewHTTPEventPublisher(envConfig.SDKKey, httpConfig, envLogger,
+			events.OptionBaseURI(eventsURI))
+		if err != nil {
+			return errInitPublisher(err)
+		}
+		thingsToCleanUp.AddFunc(eventsPublisher.Close)
+		c.metricsEventPub = eventsPublisher
+	}
+
+	em, err := params.MetricsManager.AddEnvironment(metrics.EnvironmentAttrs{
+		Name:    params.Identifiers.GetDisplayName(),
+		EnvID:   string(envConfig.EnvID),
+		EnvKey:  params.Identifiers.EnvKey,
+		ProjKey: params.Identifiers.ProjKey,
+	}, c.metricsEventPub)
+	if err != nil {
+		return errInitMetrics(err)
+	}
+	c.metricsEnv = em
+
+	thingsToCleanUp.AddFunc(func() { params.MetricsManager.RemoveEnvironment(em) })
+
+	if err := params.MetricsManager.RegisterEnvironmentHealthCallback(em, c); err != nil {
+		return errInitMetrics(err)
+	}
+
+	params.MetricsManager.AddEnvironmentForUsage(params.Identifiers.GetDisplayName(), c.metricsEventPub)
+	thingsToCleanUp.AddFunc(func() { params.MetricsManager.RemoveEnvironmentForUsage(params.Identifiers.GetDisplayName()) })
+
+	return nil
+}
+
 func (c *envContextImpl) startSDKClient(sdkKey config.SDKKey, readyCh chan<- EnvContext, suppressErrors bool) {
 	client, err := c.sdkClientFactory(sdkKey, c.sdkConfig, c.sdkInitTimeout)
 	c.mu.Lock()
@@ -541,6 +567,10 @@ func (c *envContextImpl) startSDKClient(sdkKey config.SDKKey, readyCh chan<- Env
 	c.initErr = err
 	c.mu.Unlock()
 
+	if client != nil {
+		c.monitorDataSourceErrors(client)
+	}
+
 	if err != nil {
 		if suppressErrors {
 			c.globalLogger.Warn("ignoring error initializing LaunchDarkly client", "env", name, "error", err)
@@ -557,6 +587,28 @@ func (c *envContextImpl) startSDKClient(sdkKey config.SDKKey, readyCh chan<- Env
 	if readyCh != nil {
 		readyCh <- c
 	}
+}
+
+// monitorDataSourceErrors watches an SDK client's data source status for new errors and records
+// them on the data source error metric. The subscription is created before reading the baseline
+// error time so that no error can slip between the two; an error that lands in both is skipped
+// by the timestamp check. The goroutine exits when the SDK client is closed, which closes the
+// status channel.
+func (c *envContextImpl) monitorDataSourceErrors(client sdks.LDClientContext) {
+	statusCh := client.AddDataSourceStatusListener()
+	lastErrorTime := client.GetDataSourceStatus().LastError.Time
+	go func() {
+		for status := range statusCh {
+			lastError := status.LastError
+			if lastError.Kind == "" || !lastError.Time.After(lastErrorTime) {
+				continue
+			}
+			lastErrorTime = lastError.Time
+			if c.metricsManager != nil && c.metricsEnv != nil {
+				metrics.RecordDataSourceError(context.Background(), c.metricsManager.GetInstruments(), c.metricsEnv, lastError.Kind)
+			}
+		}
+	}()
 }
 
 func (c *envContextImpl) GetPayloadFilter() config.FilterKey {
@@ -684,6 +736,13 @@ func (c *envContextImpl) GetMetricsEnv() *metrics.EnvironmentManager {
 
 func (c *envContextImpl) GetMetricsManager() *metrics.Manager {
 	return c.metricsManager
+}
+
+// EnvironmentHealth implements metrics.EnvironmentHealthProvider. It is called from the OTel
+// metrics exporter's collection goroutine, which is safe because the accessors it uses are all
+// mutex-guarded.
+func (c *envContextImpl) EnvironmentHealth() health.EnvironmentStatus {
+	return c.healthEvaluator.EvaluateEnvironment(c)
 }
 
 func (c *envContextImpl) GetTTL() time.Duration {

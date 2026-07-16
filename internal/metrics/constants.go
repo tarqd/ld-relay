@@ -19,6 +19,18 @@ const (
 	eventsDroppedMeasureName    = "launchdarkly.relay.events.dropped"
 	eventsPendingMeasureName    = "launchdarkly.relay.events.pending"
 
+	// Health metric instrument names. These report the same state as the /status endpoint.
+	dataSourceStateMeasureName         = "launchdarkly.relay.data_source.state"
+	dataSourceStateDurationMeasureName = "launchdarkly.relay.data_source.state.duration"
+	dataSourceErrorsMeasureName        = "launchdarkly.relay.data_source.errors"
+	dataStoreStateMeasureName          = "launchdarkly.relay.data_store.state"
+	dataStoreStateDurationMeasureName  = "launchdarkly.relay.data_store.state.duration"
+	bigSegmentsAvailableMeasureName    = "launchdarkly.relay.big_segments.available"
+	bigSegmentsStaleMeasureName        = "launchdarkly.relay.big_segments.potentially_stale"
+	bigSegmentsSyncAgeMeasureName      = "launchdarkly.relay.big_segments.synchronization.age"
+	relayHealthyMeasureName            = "launchdarkly.relay.status.healthy"
+	relayEnvironmentsMeasureName       = "launchdarkly.relay.environments"
+
 	defaultFlushInterval = time.Minute
 
 	BrowserPlatformCategory = "browser"
@@ -32,6 +44,11 @@ var (
 	userAgentAttrKey          = attribute.Key("user_agent")          //nolint:gochecknoglobals
 	sdkWrapperAttrKey         = attribute.Key("sdk.wrapper")         //nolint:gochecknoglobals
 	envNameAttrKey            = attribute.Key("environment.name")    //nolint:gochecknoglobals
+	envIDAttrKey              = attribute.Key("environment.id")      //nolint:gochecknoglobals
+	envKeyAttrKey             = attribute.Key("environment.key")     //nolint:gochecknoglobals
+	projKeyAttrKey            = attribute.Key("project.key")         //nolint:gochecknoglobals
+	stateAttrKey              = attribute.Key("state")               //nolint:gochecknoglobals
+	statusAttrKey             = attribute.Key("status")              //nolint:gochecknoglobals
 	applicationIDAttrKey      = attribute.Key("application.id")      //nolint:gochecknoglobals
 	applicationVersionAttrKey = attribute.Key("application.version") //nolint:gochecknoglobals
 	instanceIDAttrKey         = attribute.Key("instance.id")         //nolint:gochecknoglobals
@@ -43,6 +60,7 @@ var (
 	urlSchemeAttrKey           = semconv.URLSchemeKey              //nolint:gochecknoglobals
 	networkProtoVersionAttrKey = semconv.NetworkProtocolVersionKey //nolint:gochecknoglobals
 	errorTypeAttrKey           = semconv.ErrorTypeKey              //nolint:gochecknoglobals
+	dbSystemAttrKey            = semconv.DBSystemKey               //nolint:gochecknoglobals
 	statusCodeAttrKey          = attribute.Key("status_code")      //nolint:gochecknoglobals
 )
 

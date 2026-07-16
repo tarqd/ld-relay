@@ -82,3 +82,20 @@ func (s *nullBigSegmentStore) setSynchronizedOn(synchronizedOn ldtime.UnixMillis
 func (s *nullBigSegmentStore) GetSynchronizedOn() (ldtime.UnixMillisecondTime, error) {
 	return 0, nil
 }
+
+// NewStaticBigSegmentStore returns a stub implementation whose GetSynchronizedOn method always
+// returns the given values. Like NewNullBigSegmentStore, this is used only in tests, but it is
+// exported from this package so that we can keep the interface methods private.
+func NewStaticBigSegmentStore(synchronizedOn ldtime.UnixMillisecondTime, err error) BigSegmentStore {
+	return &staticBigSegmentStore{synchronizedOn: synchronizedOn, err: err}
+}
+
+type staticBigSegmentStore struct {
+	nullBigSegmentStore
+	synchronizedOn ldtime.UnixMillisecondTime
+	err            error
+}
+
+func (s *staticBigSegmentStore) GetSynchronizedOn() (ldtime.UnixMillisecondTime, error) {
+	return s.synchronizedOn, s.err
+}

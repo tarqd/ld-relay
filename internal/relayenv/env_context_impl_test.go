@@ -1,6 +1,7 @@
 package relayenv
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -32,10 +33,13 @@ import (
 	"github.com/launchdarkly/go-configtypes"
 	"github.com/launchdarkly/go-sdk-common/v4/ldvalue"
 	ldevents "github.com/launchdarkly/go-sdk-events/v3"
+	"github.com/launchdarkly/go-server-sdk/v7/interfaces"
 	"github.com/launchdarkly/go-server-sdk/v7/ldcomponents"
 	"github.com/launchdarkly/go-server-sdk/v7/subsystems"
 	helpers "github.com/launchdarkly/go-test-helpers/v3"
 	"github.com/launchdarkly/go-test-helpers/v3/httphelpers"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -337,6 +341,77 @@ func TestMetricsAreExportedForEnvironment(t *testing.T) {
 			}, time.Second, time.Millisecond*10, "timed out waiting for metrics event with counter")
 		}, metrics.BrowserConns)
 	})
+}
+
+func TestDataSourceErrorsAreRecordedForEnvironment(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	instruments, err := metrics.NewInstrumentsForTest(meterProvider.Meter("ld-relay"))
+	require.NoError(t, err)
+
+	metricsManager, err := metrics.NewManager(config.OpenTelemetryConfig{}, time.Minute, slog.Default())
+	require.NoError(t, err)
+	metricsManager.SetInstrumentsForTest(instruments)
+
+	clientCh := make(chan *testclient.FakeLDClient, 1)
+	readyCh := make(chan EnvContext, 1)
+	env, err := NewEnvContext(EnvContextImplParams{
+		Identifiers:    EnvIdentifiers{ConfiguredName: envName},
+		EnvConfig:      st.EnvMain.Config,
+		AllConfig:      config.Config{},
+		ClientFactory:  testclient.FakeLDClientFactoryWithChannel(true, clientCh, nil),
+		MetricsManager: metricsManager,
+		Logger:         slog.Default(),
+	}, readyCh)
+	require.NoError(t, err)
+	defer env.Close()
+
+	client := helpers.RequireValue(t, clientCh, time.Second)
+	// The error monitor is subscribed by the time the environment is reported ready, so status
+	// changes made after this point are guaranteed to be observed.
+	requireEnvReady(t, readyCh)
+
+	totalErrorCount := func() int64 {
+		var rm metricdata.ResourceMetrics
+		require.NoError(t, reader.Collect(context.Background(), &rm))
+		var total int64
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != "launchdarkly.relay.data_source.errors" {
+					continue
+				}
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				require.True(t, ok)
+				for _, dp := range sum.DataPoints {
+					total += dp.Value
+				}
+			}
+		}
+		return total
+	}
+
+	errTime := time.Now()
+	status := interfaces.DataSourceStatus{
+		State:      interfaces.DataSourceStateInterrupted,
+		StateSince: errTime,
+		LastError:  interfaces.DataSourceErrorInfo{Kind: interfaces.DataSourceErrorKindNetworkError, Time: errTime},
+	}
+	client.SetDataSourceStatus(status)
+	require.Eventually(t, func() bool { return totalErrorCount() == 1 },
+		time.Second, time.Millisecond*10, "timed out waiting for data source error metric")
+
+	// A status update whose error is unchanged (e.g. a recovery to VALID) must not increment the counter.
+	status.State = interfaces.DataSourceStateValid
+	client.SetDataSourceStatus(status)
+	require.Never(t, func() bool { return totalErrorCount() > 1 },
+		time.Millisecond*200, time.Millisecond*20, "duplicate error was counted")
+
+	// A newer error increments it again.
+	status.State = interfaces.DataSourceStateInterrupted
+	status.LastError = interfaces.DataSourceErrorInfo{Kind: interfaces.DataSourceErrorKindErrorResponse, Time: errTime.Add(time.Second)}
+	client.SetDataSourceStatus(status)
+	require.Eventually(t, func() bool { return totalErrorCount() == 2 },
+		time.Second, time.Millisecond*10, "timed out waiting for second data source error metric")
 }
 
 func TestMetricsAreNotExportedForEnvironmentInOfflineMode(t *testing.T) {

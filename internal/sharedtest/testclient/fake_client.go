@@ -31,7 +31,9 @@ type FakeLDClient struct {
 	Key              config.SDKKey
 	CloseCh          chan struct{}
 	dataSourceStatus *interfaces.DataSourceStatus
+	statusListeners  []chan interfaces.DataSourceStatus
 	initialized      bool
+	closed           bool
 	lock             sync.Mutex
 }
 
@@ -65,7 +67,32 @@ func (c *FakeLDClient) GetDataStoreStatus() sdks.DataStoreStatusInfo {
 	return sdks.DataStoreStatusInfo{Available: true}
 }
 
+func (c *FakeLDClient) AddDataSourceStatusListener() <-chan interfaces.DataSourceStatus {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	ch := make(chan interfaces.DataSourceStatus, 16)
+	if c.closed {
+		close(ch)
+		return ch
+	}
+	c.statusListeners = append(c.statusListeners, ch)
+	return ch
+}
+
 func (c *FakeLDClient) Close() error {
+	c.lock.Lock()
+	listeners := c.statusListeners
+	c.statusListeners = nil
+	alreadyClosed := c.closed
+	c.closed = true
+	c.lock.Unlock()
+
+	if alreadyClosed {
+		return nil
+	}
+	for _, ch := range listeners {
+		close(ch)
+	}
 	if c.CloseCh != nil {
 		close(c.CloseCh)
 	}
@@ -76,6 +103,9 @@ func (c *FakeLDClient) SetDataSourceStatus(newStatus interfaces.DataSourceStatus
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.dataSourceStatus = &newStatus
+	for _, ch := range c.statusListeners {
+		ch <- newStatus
+	}
 }
 
 func (c *FakeLDClient) AwaitClose(t *testing.T, timeout time.Duration) {

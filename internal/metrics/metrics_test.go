@@ -41,7 +41,7 @@ func TestAddEnvironmentWithoutEventPublisher(t *testing.T) {
 	require.NoError(t, err)
 	defer manager.Close()
 
-	env, err := manager.AddEnvironment("name", nil)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: "name"}, nil)
 
 	assert.NoError(t, err)
 	require.NotNil(t, env)
@@ -55,7 +55,7 @@ func TestAddEnvironmentWithEventPublisher(t *testing.T) {
 	require.NoError(t, err)
 	defer manager.Close()
 
-	env, err := manager.AddEnvironment("name", publisher)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: "name"}, publisher)
 
 	assert.NoError(t, err)
 	require.NotNil(t, env)
@@ -75,7 +75,7 @@ func TestAddEnvironmentAfterManagerClosed(t *testing.T) {
 	manager, err := NewManager(config.OpenTelemetryConfig{}, 0, slog.Default())
 	require.NoError(t, err)
 	manager.Close()
-	env, err := manager.AddEnvironment("name", nil)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: "name"}, nil)
 	assert.Nil(t, env)
 	assert.Error(t, err)
 }
@@ -85,7 +85,7 @@ func TestRemoveEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	defer manager.Close()
 
-	env, err := manager.AddEnvironment("name", nil)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: "name"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, env)
 
@@ -342,7 +342,7 @@ func TestWithCountRecordsPolling(t *testing.T) {
 	require.NoError(t, err)
 	defer manager.Close()
 
-	env, err := manager.AddEnvironment("polling-test", publisher)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: "polling-test"}, publisher)
 	require.NoError(t, err)
 
 	called := false

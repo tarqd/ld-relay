@@ -2,9 +2,12 @@ package metrics
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	ldevents "github.com/launchdarkly/go-sdk-events/v3"
+	"github.com/launchdarkly/go-server-sdk/v7/interfaces"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -19,6 +22,19 @@ type Instruments struct {
 	eventsFailedSend    metric.Int64Counter       // cumulative count of events that failed to send
 	eventsBytesSent     metric.Int64Counter       // cumulative bytes of event payloads successfully sent
 	pendingEvents       metric.Int64Gauge         // current number of events pending delivery
+
+	// Health instruments; observed by the callbacks in health_metrics.go, except for
+	// dataSourceErrors which is recorded synchronously via RecordDataSourceError.
+	dataSourceState         metric.Int64ObservableGauge   // state set: 1 for the current data source state, 0 for the others
+	dataSourceStateDuration metric.Float64ObservableGauge // seconds the data source has been in its current state
+	dataSourceErrors        metric.Int64Counter           // cumulative count of data source errors by error.type
+	dataStoreState          metric.Int64ObservableGauge   // state set: 1 for the current data store state, 0 for the others
+	dataStoreStateDuration  metric.Float64ObservableGauge // seconds the data store has been in its current state
+	bigSegmentsAvailable    metric.Int64ObservableGauge   // 1 if the big segments store is available, 0 if not
+	bigSegmentsStale        metric.Int64ObservableGauge   // 1 if big segments data is potentially stale, 0 if not
+	bigSegmentsSyncAge      metric.Float64ObservableGauge // seconds since the last big segments synchronization
+	relayHealthy            metric.Int64ObservableGauge   // 1 if the Relay is healthy, 0 if degraded
+	relayEnvironments       metric.Int64ObservableGauge   // environment count by connected/disconnected status
 }
 
 // Measure identifies what to record. Each pre-defined Measure var specifies which
@@ -61,51 +77,115 @@ var (
 	BrowserPollingRequests = Measure{recordPolling: true, platformCategory: BrowserPlatformCategory}
 )
 
+// newInstruments creates all of the metric instruments from the given OTel meter. It is the
+// single source of truth for instrument names, descriptions, and units, shared by NewManager
+// and NewInstrumentsForTest.
+func newInstruments(meter metric.Meter) (*Instruments, error) {
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	connections, err := meter.Int64UpDownCounter(connMeasureName,
+		metric.WithDescription("Number of active HTTP server requests"),
+		metric.WithUnit("{request}"))
+	collect(err)
+	requestDuration, err := meter.Float64Histogram(requestDurationMeasureName,
+		metric.WithDescription("Duration of HTTP server requests"),
+		metric.WithUnit("s"))
+	collect(err)
+	eventsReceivedBytes, err := meter.Int64Counter(eventsReceivedMeasureName,
+		metric.WithDescription("Bytes of event data received"),
+		metric.WithUnit("By"))
+	collect(err)
+	eventsDropped, err := meter.Int64Counter(eventsDroppedMeasureName,
+		metric.WithDescription("Events dropped due to capacity overflow"),
+		metric.WithUnit("{event}"))
+	collect(err)
+	eventsSent, err := meter.Int64Counter(eventsSentMeasureName,
+		metric.WithDescription("Events successfully sent"),
+		metric.WithUnit("{event}"))
+	collect(err)
+	eventsFailedSend, err := meter.Int64Counter(eventsSendErrorsMeasureName,
+		metric.WithDescription("Events that failed to send after all retries"),
+		metric.WithUnit("{event}"))
+	collect(err)
+	eventsBytesSent, err := meter.Int64Counter(eventsSentSizeMeasureName,
+		metric.WithDescription("Bytes of event payloads successfully sent"),
+		metric.WithUnit("By"))
+	collect(err)
+	pendingEvents, err := meter.Int64Gauge(eventsPendingMeasureName,
+		metric.WithDescription("Events buffered in the queue"),
+		metric.WithUnit("{event}"))
+	collect(err)
+
+	dataSourceState, err := meter.Int64ObservableGauge(dataSourceStateMeasureName,
+		metric.WithDescription("Data source (LaunchDarkly connection) state: 1 for the current state, 0 for the others"))
+	collect(err)
+	dataSourceStateDuration, err := meter.Float64ObservableGauge(dataSourceStateDurationMeasureName,
+		metric.WithDescription("Time the data source has been in its current state"),
+		metric.WithUnit("s"))
+	collect(err)
+	dataSourceErrors, err := meter.Int64Counter(dataSourceErrorsMeasureName,
+		metric.WithDescription("Data source connection errors"),
+		metric.WithUnit("{error}"))
+	collect(err)
+	dataStoreState, err := meter.Int64ObservableGauge(dataStoreStateMeasureName,
+		metric.WithDescription("Data store state: 1 for the current state, 0 for the others"))
+	collect(err)
+	dataStoreStateDuration, err := meter.Float64ObservableGauge(dataStoreStateDurationMeasureName,
+		metric.WithDescription("Time the data store has been in its current state"),
+		metric.WithUnit("s"))
+	collect(err)
+	bigSegmentsAvailable, err := meter.Int64ObservableGauge(bigSegmentsAvailableMeasureName,
+		metric.WithDescription("Whether the big segments store is available (1) or not (0)"))
+	collect(err)
+	bigSegmentsStale, err := meter.Int64ObservableGauge(bigSegmentsStaleMeasureName,
+		metric.WithDescription("Whether big segments data is potentially stale (1) or not (0)"))
+	collect(err)
+	bigSegmentsSyncAge, err := meter.Float64ObservableGauge(bigSegmentsSyncAgeMeasureName,
+		metric.WithDescription("Time since the last successful big segments synchronization"),
+		metric.WithUnit("s"))
+	collect(err)
+	relayHealthy, err := meter.Int64ObservableGauge(relayHealthyMeasureName,
+		metric.WithDescription("Whether the Relay Proxy is healthy (1) or degraded (0)"))
+	collect(err)
+	relayEnvironments, err := meter.Int64ObservableGauge(relayEnvironmentsMeasureName,
+		metric.WithDescription("Number of environments by connection status"),
+		metric.WithUnit("{environment}"))
+	collect(err)
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return &Instruments{
+		connections:             connections,
+		requestDuration:         requestDuration,
+		eventsReceivedBytes:     eventsReceivedBytes,
+		eventsDropped:           eventsDropped,
+		eventsSent:              eventsSent,
+		eventsFailedSend:        eventsFailedSend,
+		eventsBytesSent:         eventsBytesSent,
+		pendingEvents:           pendingEvents,
+		dataSourceState:         dataSourceState,
+		dataSourceStateDuration: dataSourceStateDuration,
+		dataSourceErrors:        dataSourceErrors,
+		dataStoreState:          dataStoreState,
+		dataStoreStateDuration:  dataStoreStateDuration,
+		bigSegmentsAvailable:    bigSegmentsAvailable,
+		bigSegmentsStale:        bigSegmentsStale,
+		bigSegmentsSyncAge:      bigSegmentsSyncAge,
+		relayHealthy:            relayHealthy,
+		relayEnvironments:       relayEnvironments,
+	}, nil
+}
+
 // NewInstrumentsForTest creates Instruments backed by the given OTel meter.
 // This is intended for use by tests outside the metrics package.
 func NewInstrumentsForTest(meter metric.Meter) (*Instruments, error) {
-	connections, err := meter.Int64UpDownCounter(connMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	requestDuration, err := meter.Float64Histogram(requestDurationMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	eventsReceivedBytes, err := meter.Int64Counter(eventsReceivedMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	eventsDropped, err := meter.Int64Counter(eventsDroppedMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	eventsSent, err := meter.Int64Counter(eventsSentMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	eventsFailedSend, err := meter.Int64Counter(eventsSendErrorsMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	eventsBytesSent, err := meter.Int64Counter(eventsSentSizeMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	pendingEvents, err := meter.Int64Gauge(eventsPendingMeasureName)
-	if err != nil {
-		return nil, err
-	}
-	return &Instruments{
-		connections:         connections,
-		requestDuration:     requestDuration,
-		eventsReceivedBytes: eventsReceivedBytes,
-		eventsDropped:       eventsDropped,
-		eventsSent:          eventsSent,
-		eventsFailedSend:    eventsFailedSend,
-		eventsBytesSent:     eventsBytesSent,
-		pendingEvents:       pendingEvents,
-	}, nil
+	return newInstruments(meter)
 }
 
 // RequestInfo contains per-request metadata used as metric attributes.
@@ -176,6 +256,19 @@ func RecordEventsReceivedBytes(ctx context.Context, instruments *Instruments, em
 	ua, wrapper, route, method, appID, appVersion, instanceID := ri.sanitized()
 	attrs := buildRequestAttributes(em.envKVs, platformCategory, ua, wrapper, route, method, ri.URLScheme, appID, appVersion, instanceID)
 	instruments.eventsReceivedBytes.Add(ctx, bytes, metric.WithAttributeSet(attrs))
+}
+
+// RecordDataSourceError records one data source error for an environment. The error kind is
+// added as the error.type attribute, lowercased to match OTel attribute value conventions
+// (e.g. NETWORK_ERROR becomes network_error).
+func RecordDataSourceError(ctx context.Context, instruments *Instruments, em *EnvironmentManager, errorKind interfaces.DataSourceErrorKind) {
+	if em == nil || instruments == nil {
+		return
+	}
+	kvs := make([]attribute.KeyValue, len(em.envKVs), len(em.envKVs)+1)
+	copy(kvs, em.envKVs)
+	kvs = append(kvs, errorTypeAttrKey.String(sanitizeTagValue(strings.ToLower(string(errorKind)))))
+	instruments.dataSourceErrors.Add(ctx, 1, metric.WithAttributeSet(attribute.NewSet(kvs...)))
 }
 
 // RecordRequestDuration records a request duration measurement with the given attributes.

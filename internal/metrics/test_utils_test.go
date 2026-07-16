@@ -55,14 +55,16 @@ func testWithOTel(t *testing.T, action func(testWithOTelParams)) {
 	require.NoError(t, err)
 	defer manager.Close()
 
-	// Override the instruments on the manager with our test ones
+	// Override the instruments and meter on the manager with our test ones, so that both
+	// synchronous recording and callback registration go through the test reader.
 	manager.instruments = instruments
+	manager.meter = meter
 
 	// Since OTel doesn't have global state like OpenCensus, we just use a randomized
 	// environment name for test isolation.
 	envName := "env-" + uuid.New()
 
-	env, err := manager.AddEnvironment(envName, nil)
+	env, err := manager.AddEnvironment(EnvironmentAttrs{Name: envName}, nil)
 	require.NoError(t, err)
 
 	action(testWithOTelParams{

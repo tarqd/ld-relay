@@ -21,6 +21,11 @@ type LDClientContext interface {
 	SecureModeHash(ldcontext.Context) string
 	GetDataSourceStatus() interfaces.DataSourceStatus
 	GetDataStoreStatus() DataStoreStatusInfo
+
+	// AddDataSourceStatusListener subscribes for notifications of data source status changes.
+	// The returned channel is closed when the client is closed.
+	AddDataSourceStatusListener() <-chan interfaces.DataSourceStatus
+
 	Close() error
 }
 
@@ -90,6 +95,10 @@ func wrapLDClient(c *ld.LDClient) LDClientContext {
 
 func (c *ldClientContextImpl) GetDataSourceStatus() interfaces.DataSourceStatus {
 	return c.GetDataSourceStatusProvider().GetStatus()
+}
+
+func (c *ldClientContextImpl) AddDataSourceStatusListener() <-chan interfaces.DataSourceStatus {
+	return c.GetDataSourceStatusProvider().AddStatusListener()
 }
 
 func (c *ldClientContextImpl) GetDataStoreStatus() DataStoreStatusInfo {

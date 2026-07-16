@@ -20,6 +20,7 @@ import (
 	"github.com/launchdarkly/ld-relay/v9/internal/autoconfigcache"
 	"github.com/launchdarkly/ld-relay/v9/internal/basictypes"
 	"github.com/launchdarkly/ld-relay/v9/internal/filedata"
+	"github.com/launchdarkly/ld-relay/v9/internal/health"
 	"github.com/launchdarkly/ld-relay/v9/internal/httpconfig"
 	"github.com/launchdarkly/ld-relay/v9/internal/metrics"
 	"github.com/launchdarkly/ld-relay/v9/internal/relayenv"
@@ -58,6 +59,8 @@ type Relay struct {
 	jsClientStreamProvider        streams.StreamProvider
 	clientInitCh                  chan relayenv.EnvContext
 	fullyConfigured               bool
+	healthEvaluator               health.Evaluator
+	unregisterHealthMetrics       func()
 	clientSideSDKBaseURL          url.URL
 	version                       string
 	userAgent                     string
@@ -157,11 +160,17 @@ func newRelayInternal(c config.Config, options relayInternalOptions) (*Relay, er
 		version:                       version.Version,
 		userAgent:                     userAgent,
 		envLogNameMode:                logNameMode,
+		healthEvaluator:               health.NewEvaluator(c.Main),
 		config:                        c,
 		logger:                        logger,
 	}
 
 	thingsToCleanUp.AddCloser(r)
+
+	r.unregisterHealthMetrics, err = metricsManager.RegisterRelayHealthCallback(relayHealthProvider{r})
+	if err != nil {
+		return nil, errNewMetricsManagerFailed(err)
+	}
 
 	r.clientSideSDKBaseURL = *c.Main.ClientSideBaseURI.Get() // config.ValidateConfig has ensured that this has a value
 
@@ -318,6 +327,9 @@ func (r *Relay) Close() error {
 	r.closed = true
 	r.lock.Unlock()
 
+	if r.unregisterHealthMetrics != nil {
+		r.unregisterHealthMetrics()
+	}
 	r.metricsManager.Close()
 
 	if r.autoConfigStream != nil {
@@ -395,6 +407,34 @@ func (r *Relay) getAllEnvironments() []relayenv.EnvContext {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 	return r.envsByCredential.Environments()
+}
+
+// relayHealthProvider adapts Relay to the metrics.RelayHealthProvider interface. It is a
+// separate type because Relay deliberately exports no methods other than ServeHTTP and Close.
+type relayHealthProvider struct {
+	r *Relay
+}
+
+// RelayHealth computes the overall Relay health, with the same semantics as the top-level
+// "healthy"/"degraded" status and per-environment "connected" statuses of the /status endpoint.
+func (p relayHealthProvider) RelayHealth() health.RelayStatus {
+	p.r.lock.RLock()
+	fullyConfigured := p.r.fullyConfigured
+	p.r.lock.RUnlock()
+
+	status := health.RelayStatus{Healthy: fullyConfigured}
+	for _, env := range p.r.getAllEnvironments() {
+		envStatus := p.r.healthEvaluator.EvaluateEnvironment(env)
+		if envStatus.Connected {
+			status.ConnectedEnvironments++
+		} else {
+			status.DisconnectedEnvironments++
+		}
+		if !envStatus.Healthy {
+			status.Healthy = false
+		}
+	}
+	return status
 }
 
 // getEnvironmentByIdentifier returns the environment object corresponding to the given identifier

@@ -26,6 +26,7 @@ var errAddEnvironmentAfterClosed = errors.New("tried to add new environment afte
 type Manager struct {
 	metricsRelayID string
 	instruments    *Instruments
+	meter          otelmetric.Meter
 	meterProvider  *sdkmetric.MeterProvider
 	flushInterval  time.Duration
 	logger         *slog.Logger
@@ -53,9 +54,10 @@ type shutdown struct {
 
 // EnvironmentManager controls the metrics exporter activity for a specific LD environment.
 type EnvironmentManager struct {
-	envKVs    []attribute.KeyValue
-	collector *RelayMetricsCollector
-	closeOnce sync.Once
+	envKVs             []attribute.KeyValue
+	collector          *RelayMetricsCollector
+	healthRegistration otelmetric.Registration // set by Manager.RegisterEnvironmentHealthCallback
+	closeOnce          sync.Once
 }
 
 // NewManager creates a Manager instance.
@@ -89,47 +91,16 @@ func NewManager(
 		meter = noop.Meter{}
 	}
 
-	connections, _ := meter.Int64UpDownCounter(connMeasureName,
-		otelmetric.WithDescription("Number of active HTTP server requests"),
-		otelmetric.WithUnit("{request}"))
-	requestDuration, _ := meter.Float64Histogram(requestDurationMeasureName,
-		otelmetric.WithDescription("Duration of HTTP server requests"),
-		otelmetric.WithUnit("s"))
-	eventsReceivedBytes, _ := meter.Int64Counter(eventsReceivedMeasureName,
-		otelmetric.WithDescription("Bytes of event data received"),
-		otelmetric.WithUnit("By"))
-
-	eventsDropped, _ := meter.Int64Counter(eventsDroppedMeasureName,
-		otelmetric.WithDescription("Events dropped due to capacity overflow"),
-		otelmetric.WithUnit("{event}"))
-	eventsSent, _ := meter.Int64Counter(eventsSentMeasureName,
-		otelmetric.WithDescription("Events successfully sent"),
-		otelmetric.WithUnit("{event}"))
-	eventsFailedSend, _ := meter.Int64Counter(eventsSendErrorsMeasureName,
-		otelmetric.WithDescription("Events that failed to send after all retries"),
-		otelmetric.WithUnit("{event}"))
-	eventsBytesSent, _ := meter.Int64Counter(eventsSentSizeMeasureName,
-		otelmetric.WithDescription("Bytes of event payloads successfully sent"),
-		otelmetric.WithUnit("By"))
-	pendingEvents, _ := meter.Int64Gauge(eventsPendingMeasureName,
-		otelmetric.WithDescription("Events buffered in the queue"),
-		otelmetric.WithUnit("{event}"))
-
-	instruments := &Instruments{
-		connections:         connections,
-		requestDuration:     requestDuration,
-		eventsReceivedBytes: eventsReceivedBytes,
-		eventsDropped:       eventsDropped,
-		eventsSent:          eventsSent,
-		eventsFailedSend:    eventsFailedSend,
-		eventsBytesSent:     eventsBytesSent,
-		pendingEvents:       pendingEvents,
+	instruments, err := newInstruments(meter)
+	if err != nil {
+		return nil, err
 	}
 
 	usageChan := make(chan any, 256)
 	m := &Manager{
 		metricsRelayID:       metricsRelayID,
 		instruments:          instruments,
+		meter:                meter,
 		meterProvider:        meterProvider,
 		flushInterval:        flushInterval,
 		logger:               logger,
@@ -227,9 +198,26 @@ func (m *Manager) Close() {
 	})
 }
 
-// AddEnvironment creates a new EnvironmentManager with its own attribute set that includes
-// the environment name.
-func (m *Manager) AddEnvironment(envName string, publisher events.EventPublisher) (*EnvironmentManager, error) {
+// EnvironmentAttrs identifies an environment for metrics purposes. Name is required; the other
+// fields are added as attributes only when they are non-empty, which is normally the case only
+// in auto-configuration or offline mode where the actual environment metadata is known.
+type EnvironmentAttrs struct {
+	// Name is the environment's display name, used as the environment.name attribute.
+	Name string
+
+	// EnvID is the LaunchDarkly environment ID, used as the environment.id attribute.
+	EnvID string
+
+	// EnvKey is the LaunchDarkly environment key, used as the environment.key attribute.
+	EnvKey string
+
+	// ProjKey is the LaunchDarkly project key, used as the project.key attribute.
+	ProjKey string
+}
+
+// AddEnvironment creates a new EnvironmentManager with its own attribute set that identifies
+// the environment.
+func (m *Manager) AddEnvironment(envAttrs EnvironmentAttrs, publisher events.EventPublisher) (*EnvironmentManager, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	if m.closed {
@@ -238,12 +226,21 @@ func (m *Manager) AddEnvironment(envName string, publisher events.EventPublisher
 
 	envKVs := []attribute.KeyValue{
 		relayIDAttrKey.String(m.metricsRelayID),
-		envNameAttrKey.String(sanitizeTagValue(envName)),
+		envNameAttrKey.String(sanitizeTagValue(envAttrs.Name)),
+	}
+	if envAttrs.EnvID != "" {
+		envKVs = append(envKVs, envIDAttrKey.String(envAttrs.EnvID))
+	}
+	if envAttrs.EnvKey != "" {
+		envKVs = append(envKVs, envKeyAttrKey.String(envAttrs.EnvKey))
+	}
+	if envAttrs.ProjKey != "" {
+		envKVs = append(envKVs, projKeyAttrKey.String(envAttrs.ProjKey))
 	}
 
 	var collector *RelayMetricsCollector
 	if publisher != nil {
-		collector = newRelayMetricsCollector(m.metricsRelayID, envName, publisher, m.flushInterval, m.logger)
+		collector = newRelayMetricsCollector(m.metricsRelayID, envAttrs.Name, publisher, m.flushInterval, m.logger)
 	}
 
 	em := &EnvironmentManager{
@@ -312,6 +309,9 @@ func (em *EnvironmentManager) FlushEventsExporter() {
 
 func (em *EnvironmentManager) close() {
 	em.closeOnce.Do(func() {
+		if em.healthRegistration != nil {
+			_ = em.healthRegistration.Unregister()
+		}
 		if em.collector != nil {
 			em.collector.close()
 		}

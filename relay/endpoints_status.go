@@ -3,17 +3,16 @@ package relay
 import (
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/launchdarkly/ld-relay/v9/config"
 	"github.com/launchdarkly/ld-relay/v9/internal/api"
+	"github.com/launchdarkly/ld-relay/v9/internal/health"
 	"github.com/launchdarkly/ld-relay/v9/internal/relayenv"
 	"github.com/launchdarkly/ld-relay/v9/internal/sdks"
 
 	"github.com/gorilla/mux"
 	"github.com/launchdarkly/go-sdk-common/v4/ldtime"
 	ld "github.com/launchdarkly/go-server-sdk/v7"
-	"github.com/launchdarkly/go-server-sdk/v7/interfaces"
 )
 
 const (
@@ -147,66 +146,41 @@ func (r *Relay) buildEnvironmentStatus(clientCtx relayenv.EnvContext) (api.Envir
 		}
 	}
 
-	healthy := true
-	client := clientCtx.GetClient()
-	if client == nil {
-		status.Status = statusEnvDisconnected
-		status.ConnectionStatus.State = interfaces.DataSourceStateInitializing
-		status.ConnectionStatus.StateSince = ldtime.UnixMillisFromTime(clientCtx.GetCreationTime())
-		status.DataStoreStatus.State = "INITIALIZING"
-		healthy = false
-	} else {
-		connected := client.Initialized()
+	// The health evaluator is the shared source of truth for connection/store/big-segments
+	// state, so that this endpoint always agrees with the OTel health metrics.
+	envHealth := r.healthEvaluator.EvaluateEnvironment(clientCtx)
 
-		sourceStatus := client.GetDataSourceStatus()
-		status.ConnectionStatus = api.ConnectionStatusRep{
-			State:      sourceStatus.State,
-			StateSince: ldtime.UnixMillisFromTime(sourceStatus.StateSince),
-		}
-		if sourceStatus.LastError.Kind != "" {
-			status.ConnectionStatus.LastError = &api.ConnectionErrorRep{
-				Kind: sourceStatus.LastError.Kind,
-				Time: ldtime.UnixMillisFromTime(sourceStatus.LastError.Time),
-			}
-		}
-		if sourceStatus.State != interfaces.DataSourceStateValid &&
-			time.Since(sourceStatus.StateSince) >=
-				r.config.Main.DisconnectedStatusTime.GetOrElse(config.DefaultDisconnectedStatusTime) {
-			connected = false
-		}
-
-		storeStatus := client.GetDataStoreStatus()
-		status.DataStoreStatus.State = "VALID"
-		status.DataStoreStatus.StateSince = ldtime.UnixMillisFromTime(storeStatus.LastUpdated)
-		if !storeStatus.Available {
-			status.DataStoreStatus.State = "INTERRUPTED"
-		}
-
-		if connected {
-			status.Status = statusEnvConnected
-		} else {
-			status.Status = statusEnvDisconnected
-			healthy = false
+	status.ConnectionStatus = api.ConnectionStatusRep{
+		State:      envHealth.DataSource.State,
+		StateSince: ldtime.UnixMillisFromTime(envHealth.DataSource.StateSince),
+	}
+	if envHealth.DataSource.LastError.Kind != "" {
+		status.ConnectionStatus.LastError = &api.ConnectionErrorRep{
+			Kind: envHealth.DataSource.LastError.Kind,
+			Time: ldtime.UnixMillisFromTime(envHealth.DataSource.LastError.Time),
 		}
 	}
 
-	bigSegmentStore := clientCtx.GetBigSegmentStore()
-	if bigSegmentStore != nil {
-		bigSegmentStatus := api.BigSegmentStatusRep{}
-		synchronizedOn, err := bigSegmentStore.GetSynchronizedOn()
-		if err != nil {
-			bigSegmentStatus.Available = false
-		} else {
-			bigSegmentStatus.Available = true
-			bigSegmentStatus.LastSynchronizedOn = synchronizedOn
-			now := ldtime.UnixMillisNow()
-			stalenessThreshold := r.config.Main.BigSegmentsStaleThreshold.GetOrElse(config.DefaultBigSegmentsStaleThreshold)
-			if !synchronizedOn.IsDefined() || now > (synchronizedOn+ldtime.UnixMillisecondTime(stalenessThreshold.Milliseconds())) { //nolint: gosec
-				bigSegmentStatus.PotentiallyStale = true
-				if r.config.Main.BigSegmentsStaleAsDegraded {
-					healthy = false
-				}
-			}
+	status.DataStoreStatus.State = envHealth.DataStore.State
+	if envHealth.DataStore.State != health.DataStoreStateInitializing {
+		// While the store is INITIALIZING (i.e. the SDK client does not exist yet) there is no
+		// meaningful timestamp and stateSince is reported as zero.
+		status.DataStoreStatus.StateSince = ldtime.UnixMillisFromTime(envHealth.DataStore.StateSince)
+	}
+
+	if envHealth.Connected {
+		status.Status = statusEnvConnected
+	} else {
+		status.Status = statusEnvDisconnected
+	}
+
+	if envHealth.BigSegments != nil {
+		bigSegmentStatus := api.BigSegmentStatusRep{
+			Available:        envHealth.BigSegments.Available,
+			PotentiallyStale: envHealth.BigSegments.PotentiallyStale,
+		}
+		if envHealth.BigSegments.Available {
+			bigSegmentStatus.LastSynchronizedOn = envHealth.BigSegments.LastSynchronized
 		}
 		status.BigSegmentStatus = &bigSegmentStatus
 	}
@@ -217,5 +191,5 @@ func (r *Relay) buildEnvironmentStatus(clientCtx relayenv.EnvContext) (api.Envir
 	status.DataStoreStatus.DBPrefix = storeInfo.DBPrefix
 	status.DataStoreStatus.DBTable = storeInfo.DBTable
 
-	return status, healthy
+	return status, envHealth.Healthy
 }
