@@ -125,8 +125,9 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 			LogLevel:                         NewOptLogLevel(slog.LevelWarn),
 			BigSegmentsStaleAsDegraded:       true,
 			BigSegmentsStaleThreshold:        ct.NewOptDuration(10 * time.Minute),
-			DisableBigSegmentSync:            true,
-			BigSegmentURI:                    newOptURLAbsoluteMustBeValid("http://bigsegments"),
+			EnableBigSegmentSync:             ct.NewOptBool(false),
+			BigSegmentBaseURI:                newOptURLAbsoluteMustBeValid("http://bigsegmentbase"),
+			BigSegmentStreamURI:              newOptURLAbsoluteMustBeValid("http://bigsegmentstream"),
 			ExpiredCredentialCleanupInterval: ct.NewOptDuration(1 * time.Minute),
 			PingStreamJitterTime:             ct.NewOptDuration(5 * time.Minute),
 		}
@@ -147,8 +148,8 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 				TableName: "earth-table",
 				LogLevel:  NewOptLogLevel(slog.LevelDebug),
 				// Opts this one environment back in to synchronization, overriding the main-level
-				// DisableBigSegmentSync above.
-				DisableBigSegmentSync: ct.NewOptBool(false),
+				// EnableBigSegmentSync above.
+				EnableBigSegmentSync: ct.NewOptBool(true),
 			},
 			"krypton": {
 				SDKKey:        "krypton-sdk",
@@ -182,8 +183,9 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 		"LOG_LEVEL":                           "warn",
 		"BIG_SEGMENTS_STALE_AS_DEGRADED":      "true",
 		"BIG_SEGMENTS_STALE_THRESHOLD":        "10m",
-		"DISABLE_BIG_SEGMENT_SYNC":            "true",
-		"BIG_SEGMENT_URI":                     "http://bigsegments",
+		"ENABLE_BIG_SEGMENT_SYNC":             "false",
+		"BIG_SEGMENT_BASE_URI":                "http://bigsegmentbase",
+		"BIG_SEGMENT_STREAM_URI":              "http://bigsegmentstream",
 		"USE_EVENTS":                          "1",
 		"EVENTS_HOST":                         "http://events",
 		"EVENTS_FLUSH_INTERVAL":               "120s",
@@ -195,7 +197,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 		"LD_PREFIX_earth":                     "earth-",
 		"LD_TABLE_NAME_earth":                 "earth-table",
 		"LD_LOG_LEVEL_earth":                  "debug",
-		"LD_DISABLE_BIG_SEGMENT_SYNC_earth":   "false",
+		"LD_ENABLE_BIG_SEGMENT_SYNC_earth":    "true",
 		"LD_ENV_krypton":                      "krypton-sdk",
 		"LD_MOBILE_KEY_krypton":               "krypton-mob",
 		"LD_CLIENT_SIDE_ID_krypton":           "krypton-env",
@@ -229,8 +231,9 @@ TLSMinVersion = "1.2"
 LogLevel = "warn"
 BigSegmentsStaleAsDegraded = 1
 BigSegmentsStaleThreshold = 10m
-DisableBigSegmentSync = 1
-BigSegmentUri = "http://bigsegments"
+EnableBigSegmentSync = 0
+BigSegmentBaseUri = "http://bigsegmentbase"
+BigSegmentStreamUri = "http://bigsegmentstream"
 ExpiredCredentialCleanupInterval = 1m
 
 [Events]
@@ -247,7 +250,7 @@ EnvId = "earth-env"
 Prefix = "earth-"
 TableName = "earth-table"
 LogLevel = "debug"
-DisableBigSegmentSync = false
+EnableBigSegmentSync = true
 
 [Environment "krypton"]
 SdkKey = "krypton-sdk"

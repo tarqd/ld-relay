@@ -614,7 +614,7 @@ func newBigSegmentsTestEnv(
 }
 
 func TestBigSegmentsSynchronizerIsNotCreatedIfSyncIsDisabled(t *testing.T) {
-	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+	allConfig := config.Config{Main: config.MainConfig{EnableBigSegmentSync: configtypes.NewOptBool(false)}}
 
 	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
 	defer env.Close()
@@ -628,7 +628,7 @@ func TestBigSegmentsSynchronizerIsNotCreatedIfSyncIsDisabled(t *testing.T) {
 // segment exists, so that it starts staleness polling and reports big segment status - the store is
 // being written by some other Relay instance that does synchronize.
 func TestBigSegmentsAreStillUsableWhenSyncIsDisabled(t *testing.T) {
-	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+	allConfig := config.Config{Main: config.MainConfig{EnableBigSegmentSync: configtypes.NewOptBool(false)}}
 	changeSetCh := make(chan subsystems.ChangeSet, 1)
 
 	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, changeSetCh)
@@ -648,7 +648,7 @@ func TestBigSegmentsAreStillUsableWhenSyncIsDisabled(t *testing.T) {
 
 func TestBigSegmentSyncCanBeDisabledPerEnvironment(t *testing.T) {
 	envConfig := st.EnvMain.Config
-	envConfig.DisableBigSegmentSync = configtypes.NewOptBool(true)
+	envConfig.EnableBigSegmentSync = configtypes.NewOptBool(false)
 
 	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, config.Config{}, envConfig, nil)
 	defer env.Close()
@@ -657,15 +657,15 @@ func TestBigSegmentSyncCanBeDisabledPerEnvironment(t *testing.T) {
 }
 
 func TestBigSegmentSyncCanBeReEnabledPerEnvironment(t *testing.T) {
-	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+	allConfig := config.Config{Main: config.MainConfig{EnableBigSegmentSync: configtypes.NewOptBool(false)}}
 	envConfig := st.EnvMain.Config
-	envConfig.DisableBigSegmentSync = configtypes.NewOptBool(false)
+	envConfig.EnableBigSegmentSync = configtypes.NewOptBool(true)
 
 	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, envConfig, nil)
 	defer env.Close()
 
 	require.NotNil(t, fakeSynchronizerFactory.synchronizer,
-		"an environment-level override of false should re-enable synchronization")
+		"an environment-level override of true should re-enable synchronization")
 	assert.False(t, fakeSynchronizerFactory.synchronizer.isStarted())
 }
 
@@ -676,7 +676,7 @@ func mustOptURLAbsolute(t *testing.T, url string) configtypes.OptURLAbsolute {
 	return opt
 }
 
-func TestBigSegmentSyncUsesBaseURIWhenBigSegmentURIIsNotSet(t *testing.T) {
+func TestBigSegmentSyncUsesGeneralURIsWhenOverridesAreNotSet(t *testing.T) {
 	allConfig := config.Config{Main: config.MainConfig{
 		BaseURI:   mustOptURLAbsolute(t, "http://base"),
 		StreamURI: mustOptURLAbsolute(t, "http://stream"),
@@ -690,22 +690,59 @@ func TestBigSegmentSyncUsesBaseURIWhenBigSegmentURIIsNotSet(t *testing.T) {
 	assert.Equal(t, "http://stream", fakeSynchronizerFactory.streamURI)
 }
 
-// TestBigSegmentURIOverridesBaseURIForSync covers BIG_SEGMENT_URI: it replaces the base URI that
-// the big segment synchronizer polls, and leaves the stream URI alone.
-func TestBigSegmentURIOverridesBaseURIForSync(t *testing.T) {
+// TestBigSegmentURIOverridesReachTheSynchronizer covers BIG_SEGMENT_BASE_URI and
+// BIG_SEGMENT_STREAM_URI: each replaces the corresponding URI that the big segment synchronizer is
+// built with, and neither affects the endpoints Relay uses for flag data.
+func TestBigSegmentURIOverridesReachTheSynchronizer(t *testing.T) {
 	allConfig := config.Config{Main: config.MainConfig{
-		BaseURI:       mustOptURLAbsolute(t, "http://base"),
-		StreamURI:     mustOptURLAbsolute(t, "http://stream"),
-		BigSegmentURI: mustOptURLAbsolute(t, "http://bigsegments"),
+		BaseURI:             mustOptURLAbsolute(t, "http://base"),
+		StreamURI:           mustOptURLAbsolute(t, "http://stream"),
+		BigSegmentBaseURI:   mustOptURLAbsolute(t, "http://bigsegmentbase"),
+		BigSegmentStreamURI: mustOptURLAbsolute(t, "http://bigsegmentstream"),
 	}}
 
 	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
 	defer env.Close()
 
 	require.NotNil(t, fakeSynchronizerFactory.synchronizer)
-	assert.Equal(t, "http://bigsegments", fakeSynchronizerFactory.pollURI)
-	assert.Equal(t, "http://stream", fakeSynchronizerFactory.streamURI,
-		"overriding the big segment URI should not affect the stream URI")
+	assert.Equal(t, "http://bigsegmentbase", fakeSynchronizerFactory.pollURI)
+	assert.Equal(t, "http://bigsegmentstream", fakeSynchronizerFactory.streamURI)
+	assert.Equal(t, "http://base", allConfig.Main.BaseURI.String(), "the general base URI is untouched")
+	assert.Equal(t, "http://stream", allConfig.Main.StreamURI.String(), "the general stream URI is untouched")
+}
+
+// TestBigSegmentURIOverridesAreIndependent confirms that overriding only one of the two leaves the
+// other resolving to its general counterpart.
+func TestBigSegmentURIOverridesAreIndependent(t *testing.T) {
+	t.Run("base only", func(t *testing.T) {
+		allConfig := config.Config{Main: config.MainConfig{
+			BaseURI:           mustOptURLAbsolute(t, "http://base"),
+			StreamURI:         mustOptURLAbsolute(t, "http://stream"),
+			BigSegmentBaseURI: mustOptURLAbsolute(t, "http://bigsegmentbase"),
+		}}
+
+		env, f := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
+		defer env.Close()
+
+		require.NotNil(t, f.synchronizer)
+		assert.Equal(t, "http://bigsegmentbase", f.pollURI)
+		assert.Equal(t, "http://stream", f.streamURI)
+	})
+
+	t.Run("stream only", func(t *testing.T) {
+		allConfig := config.Config{Main: config.MainConfig{
+			BaseURI:             mustOptURLAbsolute(t, "http://base"),
+			StreamURI:           mustOptURLAbsolute(t, "http://stream"),
+			BigSegmentStreamURI: mustOptURLAbsolute(t, "http://bigsegmentstream"),
+		}}
+
+		env, f := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
+		defer env.Close()
+
+		require.NotNil(t, f.synchronizer)
+		assert.Equal(t, "http://base", f.pollURI)
+		assert.Equal(t, "http://bigsegmentstream", f.streamURI)
+	})
 }
 
 func TestBigSegmentsSynchronizerIsStartedBySingleItemUpdateWithBigSegment(t *testing.T) {

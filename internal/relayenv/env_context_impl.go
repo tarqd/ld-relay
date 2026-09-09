@@ -147,7 +147,7 @@ type envContextStreamUpdates struct {
 // that there should be one, and the synchronizer that keeps that store up to date. It returns the
 // store, or nil if big segments are not enabled for this environment.
 //
-// Synchronization can be turned off independently of the store: see config.BigSegmentSyncDisabled.
+// Synchronization can be turned off independently of the store: see config.BigSegmentSyncEnabled.
 // In that case the store is still created, so that big segments remain fully usable for evaluations
 // using data that some other Relay instance sharing the database writes there.
 func (c *envContextImpl) configureBigSegments(
@@ -173,7 +173,7 @@ func (c *envContextImpl) configureBigSegments(
 	thingsToCleanUp.AddCloser(store)
 	c.bigSegmentStore = store
 
-	if config.BigSegmentSyncDisabled(allConfig, envConfig) {
+	if !config.BigSegmentSyncEnabled(allConfig, envConfig) {
 		c.logger.Info("big segment synchronization is disabled for this environment;" +
 			" big segment data will be read from the database but not written to it")
 		return store, nil
@@ -184,7 +184,7 @@ func (c *envContextImpl) configureBigSegments(
 		syncFactory = bigsegments.DefaultBigSegmentSynchronizerFactory
 	}
 	c.bigSegmentSync = syncFactory(
-		httpConfig, store, config.BigSegmentSyncBaseURI(allConfig), allConfig.Main.StreamURI.String(),
+		httpConfig, store, config.BigSegmentSyncBaseURI(allConfig), config.BigSegmentSyncStreamURI(allConfig),
 		envConfig.EnvID, envConfig.SDKKey, c.logger, logPrefix)
 	thingsToCleanUp.AddFunc(c.bigSegmentSync.Close)
 

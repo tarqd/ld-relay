@@ -30,6 +30,11 @@ const (
 	// LaunchDarkly service for recording events.
 	DefaultEventsURI = "https://events.launchdarkly.com"
 
+	// DefaultBigSegmentSyncEnabled is the default value for MainConfig.EnableBigSegmentSync if not
+	// specified. Big segment synchronization is on by default whenever a big-segment-capable
+	// database is configured, so this option only ever needs to be set in order to turn it off.
+	DefaultBigSegmentSyncEnabled = true
+
 	// DefaultInitTimeout is the default value for MainConfig.InitTimeout if not specified.
 	DefaultInitTimeout = time.Second * 10
 
@@ -203,8 +208,9 @@ type MainConfig struct {
 	LogLevel                         OptLogLevel              `conf:"LOG_LEVEL"`
 	BigSegmentsStaleAsDegraded       bool                     `conf:"BIG_SEGMENTS_STALE_AS_DEGRADED"`
 	BigSegmentsStaleThreshold        ct.OptDuration           `conf:"BIG_SEGMENTS_STALE_THRESHOLD"`
-	DisableBigSegmentSync            bool                     `conf:"DISABLE_BIG_SEGMENT_SYNC"`
-	BigSegmentURI                    ct.OptURLAbsolute        `conf:"BIG_SEGMENT_URI"`
+	EnableBigSegmentSync             ct.OptBool               `conf:"ENABLE_BIG_SEGMENT_SYNC"`
+	BigSegmentBaseURI                ct.OptURLAbsolute        `conf:"BIG_SEGMENT_BASE_URI"`
+	BigSegmentStreamURI              ct.OptURLAbsolute        `conf:"BIG_SEGMENT_STREAM_URI"`
 	ExpiredCredentialCleanupInterval ct.OptDuration           `conf:"EXPIRED_CREDENTIAL_CLEANUP_INTERVAL"`
 }
 
@@ -317,34 +323,50 @@ type EnvConfig struct {
 	FilterKey     FilterKey        // injected based on [filters] section
 	Offline       bool             // set to true if this environment was created in offline mode
 
-	// DisableBigSegmentSync overrides MainConfig.DisableBigSegmentSync for this environment. If it
-	// is undefined, the main-level setting applies. Use BigSegmentSyncDisabled to resolve the two.
-	DisableBigSegmentSync ct.OptBool `conf:"LD_DISABLE_BIG_SEGMENT_SYNC_"`
+	// EnableBigSegmentSync overrides MainConfig.EnableBigSegmentSync for this environment. If it
+	// is undefined, the main-level setting applies. Use BigSegmentSyncEnabled to resolve the two.
+	EnableBigSegmentSync ct.OptBool `conf:"LD_ENABLE_BIG_SEGMENT_SYNC_"`
 }
 
-// BigSegmentSyncDisabled reports whether Relay should refrain from running a big segment
-// synchronizer for the given environment.
+// BigSegmentSyncEnabled reports whether Relay should run a big segment synchronizer for the given
+// environment. Synchronization is on unless it is explicitly turned off, so an unset option at both
+// the environment and main level resolves to true.
 //
-// Disabling synchronization does not disable big segments: if a big-segment-capable database is
+// Turning synchronization off does not turn big segments off: if a big-segment-capable database is
 // configured, Relay still reads big segment membership from it for client-side evaluations, and
 // still reports big segment status. It only stops Relay from opening its own synchronization stream
 // to LaunchDarkly and writing big segment data to the database, which is what you want for a fleet
 // of read-only Relay instances sharing a database with an instance that does synchronize.
-func BigSegmentSyncDisabled(allConfig Config, envConfig EnvConfig) bool {
-	return envConfig.DisableBigSegmentSync.GetOrElse(allConfig.Main.DisableBigSegmentSync)
+func BigSegmentSyncEnabled(allConfig Config, envConfig EnvConfig) bool {
+	return envConfig.EnableBigSegmentSync.GetOrElse(
+		allConfig.Main.EnableBigSegmentSync.GetOrElse(DefaultBigSegmentSyncEnabled))
 }
 
 // BigSegmentSyncBaseURI returns the base URI that Relay should use for big segment synchronization
-// polling requests. This is MainConfig.BigSegmentURI if it is set, and MainConfig.BaseURI otherwise.
+// polling requests: MainConfig.BigSegmentBaseURI if it is set, and MainConfig.BaseURI otherwise.
 //
 // Big segment synchronization polls the same LaunchDarkly service that server-side SDKs poll for
-// flag data, so BaseURI is the appropriate default. Setting BigSegmentURI redirects only the big
-// segment synchronizer, leaving the endpoints that Relay uses for flag data alone.
+// flag data, so BaseURI is the appropriate default. Setting BigSegmentBaseURI redirects only the big
+// segment synchronizer's polling, leaving the endpoints that Relay uses for flag data alone.
 func BigSegmentSyncBaseURI(allConfig Config) string {
-	if allConfig.Main.BigSegmentURI.IsDefined() {
-		return allConfig.Main.BigSegmentURI.String()
+	if allConfig.Main.BigSegmentBaseURI.IsDefined() {
+		return allConfig.Main.BigSegmentBaseURI.String()
 	}
 	return allConfig.Main.BaseURI.String()
+}
+
+// BigSegmentSyncStreamURI returns the base URI that Relay should use for the big segment
+// synchronization stream: MainConfig.BigSegmentStreamURI if it is set, and MainConfig.StreamURI
+// otherwise.
+//
+// This is the counterpart of BigSegmentSyncBaseURI for the streaming half of synchronization. The
+// two are independent, so you can redirect either one, or both, without affecting the endpoints
+// that Relay uses for flag data.
+func BigSegmentSyncStreamURI(allConfig Config) string {
+	if allConfig.Main.BigSegmentStreamURI.IsDefined() {
+		return allConfig.Main.BigSegmentStreamURI.String()
+	}
+	return allConfig.Main.StreamURI.String()
 }
 
 type FiltersConfig struct {
