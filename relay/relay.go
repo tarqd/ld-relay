@@ -214,9 +214,17 @@ func newRelayInternal(c config.Config, options relayInternalOptions) (*Relay, er
 			return nil, err
 		}
 
+		// The auto-configuration stream normally comes from the same service as the SDK streams, but
+		// AutoConfig.URI overrides that if it is set.
+		autoConfigURI := c.Main.StreamURI.Get()
+		if c.AutoConfig.URI.IsDefined() {
+			autoConfigURI = c.AutoConfig.URI.Get()
+			logger.Info("using custom URI for the auto-configuration stream", "uri", autoConfigURI.String())
+		}
+
 		r.autoConfigStream = autoconfig.NewStreamManager(
 			c.AutoConfig.Key,
-			c.Main.StreamURI.Get(),
+			autoConfigURI,
 			projmanager.NewProjectRouter(&relayAutoConfigActions{r}, logger),
 			httpConfig,
 			0,

@@ -209,13 +209,19 @@ type MainConfig struct {
 
 // AutoConfigConfig contains configuration parameters for the auto-configuration feature.
 type AutoConfigConfig struct {
-	Key                   AutoConfigKey    `conf:"AUTO_CONFIG_KEY"`
-	EnvDatastorePrefix    string           `conf:"ENV_DATASTORE_PREFIX"`
-	EnvDatastoreTableName string           `conf:"ENV_DATASTORE_TABLE_NAME"`
-	EnvAllowedOrigin      ct.OptStringList `conf:"ENV_ALLOWED_ORIGIN"`
-	EnvAllowedHeader      ct.OptStringList `conf:"ENV_ALLOWED_HEADER"`
-	CacheKey              string           `conf:"AUTO_CONFIG_CACHE_KEY"`
-	CacheEncryptionKey    string           `conf:"AUTO_CONFIG_CACHE_ENCRYPTION_KEY"`
+	Key AutoConfigKey `conf:"AUTO_CONFIG_KEY"`
+
+	// URI is the base URI of the service that provides the auto-configuration stream. If it is set,
+	// it overrides MainConfig.StreamURI for the auto-configuration stream only; the SDK streams for
+	// each environment still use MainConfig.StreamURI. If it is not set, the auto-configuration
+	// stream uses MainConfig.StreamURI.
+	URI                   ct.OptURLAbsolute `conf:"AUTO_CONFIG_URI"`
+	EnvDatastorePrefix    string            `conf:"ENV_DATASTORE_PREFIX"`
+	EnvDatastoreTableName string            `conf:"ENV_DATASTORE_TABLE_NAME"`
+	EnvAllowedOrigin      ct.OptStringList  `conf:"ENV_ALLOWED_ORIGIN"`
+	EnvAllowedHeader      ct.OptStringList  `conf:"ENV_ALLOWED_HEADER"`
+	CacheKey              string            `conf:"AUTO_CONFIG_CACHE_KEY"`
+	CacheEncryptionKey    string            `conf:"AUTO_CONFIG_CACHE_ENCRYPTION_KEY"`
 }
 
 // OfflineModeConfig contains configuration parameters for the offline/file data source feature.
