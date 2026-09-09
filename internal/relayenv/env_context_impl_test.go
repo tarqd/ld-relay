@@ -669,6 +669,45 @@ func TestBigSegmentSyncCanBeReEnabledPerEnvironment(t *testing.T) {
 	assert.False(t, fakeSynchronizerFactory.synchronizer.isStarted())
 }
 
+// mustOptURLAbsolute builds a ct.OptURLAbsolute for a URL that is known to be valid.
+func mustOptURLAbsolute(t *testing.T, url string) configtypes.OptURLAbsolute {
+	opt, err := configtypes.NewOptURLAbsoluteFromString(url)
+	require.NoError(t, err)
+	return opt
+}
+
+func TestBigSegmentSyncUsesBaseURIWhenBigSegmentURIIsNotSet(t *testing.T) {
+	allConfig := config.Config{Main: config.MainConfig{
+		BaseURI:   mustOptURLAbsolute(t, "http://base"),
+		StreamURI: mustOptURLAbsolute(t, "http://stream"),
+	}}
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
+	defer env.Close()
+
+	require.NotNil(t, fakeSynchronizerFactory.synchronizer)
+	assert.Equal(t, "http://base", fakeSynchronizerFactory.pollURI)
+	assert.Equal(t, "http://stream", fakeSynchronizerFactory.streamURI)
+}
+
+// TestBigSegmentURIOverridesBaseURIForSync covers BIG_SEGMENT_URI: it replaces the base URI that
+// the big segment synchronizer polls, and leaves the stream URI alone.
+func TestBigSegmentURIOverridesBaseURIForSync(t *testing.T) {
+	allConfig := config.Config{Main: config.MainConfig{
+		BaseURI:       mustOptURLAbsolute(t, "http://base"),
+		StreamURI:     mustOptURLAbsolute(t, "http://stream"),
+		BigSegmentURI: mustOptURLAbsolute(t, "http://bigsegments"),
+	}}
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
+	defer env.Close()
+
+	require.NotNil(t, fakeSynchronizerFactory.synchronizer)
+	assert.Equal(t, "http://bigsegments", fakeSynchronizerFactory.pollURI)
+	assert.Equal(t, "http://stream", fakeSynchronizerFactory.streamURI,
+		"overriding the big segment URI should not affect the stream URI")
+}
+
 func TestBigSegmentsSynchronizerIsStartedBySingleItemUpdateWithBigSegment(t *testing.T) {
 	envConfig := st.EnvMain.Config
 	allConfig := config.Config{}
@@ -801,6 +840,8 @@ func flushMetricsEvents(c *envContextImpl) {
 
 type mockBigSegmentSynchronizerFactory struct {
 	synchronizer *mockBigSegmentSynchronizer
+	pollURI      string
+	streamURI    string
 }
 
 func (f *mockBigSegmentSynchronizerFactory) create(
@@ -813,6 +854,8 @@ func (f *mockBigSegmentSynchronizerFactory) create(
 	logger *slog.Logger,
 	logPrefix string,
 ) bigsegments.BigSegmentSynchronizer {
+	f.pollURI = pollURI
+	f.streamURI = streamURI
 	f.synchronizer = &mockBigSegmentSynchronizer{updateCh: make(chan bigsegments.UpdatesSummary)}
 	return f.synchronizer
 }

@@ -184,7 +184,7 @@ func (c *envContextImpl) configureBigSegments(
 		syncFactory = bigsegments.DefaultBigSegmentSynchronizerFactory
 	}
 	c.bigSegmentSync = syncFactory(
-		httpConfig, store, allConfig.Main.BaseURI.String(), allConfig.Main.StreamURI.String(),
+		httpConfig, store, config.BigSegmentSyncBaseURI(allConfig), allConfig.Main.StreamURI.String(),
 		envConfig.EnvID, envConfig.SDKKey, c.logger, logPrefix)
 	thingsToCleanUp.AddFunc(c.bigSegmentSync.Close)
 

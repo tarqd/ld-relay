@@ -126,6 +126,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 			BigSegmentsStaleAsDegraded:       true,
 			BigSegmentsStaleThreshold:        ct.NewOptDuration(10 * time.Minute),
 			DisableBigSegmentSync:            true,
+			BigSegmentURI:                    newOptURLAbsoluteMustBeValid("http://bigsegments"),
 			ExpiredCredentialCleanupInterval: ct.NewOptDuration(1 * time.Minute),
 			PingStreamJitterTime:             ct.NewOptDuration(5 * time.Minute),
 		}
@@ -182,6 +183,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 		"BIG_SEGMENTS_STALE_AS_DEGRADED":      "true",
 		"BIG_SEGMENTS_STALE_THRESHOLD":        "10m",
 		"DISABLE_BIG_SEGMENT_SYNC":            "true",
+		"BIG_SEGMENT_URI":                     "http://bigsegments",
 		"USE_EVENTS":                          "1",
 		"EVENTS_HOST":                         "http://events",
 		"EVENTS_FLUSH_INTERVAL":               "120s",
@@ -228,6 +230,7 @@ LogLevel = "warn"
 BigSegmentsStaleAsDegraded = 1
 BigSegmentsStaleThreshold = 10m
 DisableBigSegmentSync = 1
+BigSegmentUri = "http://bigsegments"
 ExpiredCredentialCleanupInterval = 1m
 
 [Events]

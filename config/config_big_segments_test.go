@@ -48,3 +48,35 @@ func TestDisableBigSegmentSyncFromEnvironment(t *testing.T) {
 		assert.True(t, BigSegmentSyncDisabled(c, *c.Environment["krypton"]))
 	})
 }
+
+func TestBigSegmentSyncBaseURIResolution(t *testing.T) {
+	baseURI := newOptURLAbsoluteMustBeValid("http://base")
+	bigSegmentURI := newOptURLAbsoluteMustBeValid("http://bigsegments")
+
+	t.Run("falls back to the base URI", func(t *testing.T) {
+		c := Config{Main: MainConfig{BaseURI: baseURI}}
+		assert.Equal(t, "http://base", BigSegmentSyncBaseURI(c))
+	})
+
+	t.Run("big segment URI takes precedence", func(t *testing.T) {
+		c := Config{Main: MainConfig{BaseURI: baseURI, BigSegmentURI: bigSegmentURI}}
+		assert.Equal(t, "http://bigsegments", BigSegmentSyncBaseURI(c))
+	})
+
+	t.Run("big segment URI applies even with no base URI", func(t *testing.T) {
+		c := Config{Main: MainConfig{BigSegmentURI: bigSegmentURI}}
+		assert.Equal(t, "http://bigsegments", BigSegmentSyncBaseURI(c))
+	})
+}
+
+func TestBigSegmentURIFromEnvironment(t *testing.T) {
+	withEnvironment(map[string]string{
+		"BASE_URI":        "http://base",
+		"BIG_SEGMENT_URI": "http://bigsegments",
+	}, func() {
+		var c Config
+		require.NoError(t, LoadConfigFromEnvironment(&c, slog.Default()))
+		assert.Equal(t, "http://bigsegments", c.Main.BigSegmentURI.String())
+		assert.Equal(t, "http://bigsegments", BigSegmentSyncBaseURI(c))
+	})
+}
