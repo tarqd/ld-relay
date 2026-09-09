@@ -143,6 +143,78 @@ type envContextStreamUpdates struct {
 	context *envContextImpl
 }
 
+// configureBigSegments creates the environment's big segment store, if the configuration implies
+// that there should be one, and the synchronizer that keeps that store up to date. It returns the
+// store, or nil if big segments are not enabled for this environment.
+//
+// Synchronization can be turned off independently of the store: see config.BigSegmentSyncDisabled.
+// In that case the store is still created, so that big segments remain fully usable for evaluations
+// using data that some other Relay instance sharing the database writes there.
+func (c *envContextImpl) configureBigSegments(
+	params EnvContextImplParams,
+	httpConfig httpconfig.HTTPConfig,
+	logPrefix string,
+	thingsToCleanUp *util.CleanupTasks,
+) (bigsegments.BigSegmentStore, error) {
+	envConfig := params.EnvConfig
+	allConfig := params.AllConfig
+
+	storeFactory := params.BigSegmentStoreFactory
+	if storeFactory == nil {
+		storeFactory = bigsegments.DefaultBigSegmentStoreFactory
+	}
+	store, err := storeFactory(envConfig, allConfig, c.logger)
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, nil
+	}
+	thingsToCleanUp.AddCloser(store)
+	c.bigSegmentStore = store
+
+	if config.BigSegmentSyncDisabled(allConfig, envConfig) {
+		c.logger.Info("big segment synchronization is disabled for this environment;" +
+			" big segment data will be read from the database but not written to it")
+		return store, nil
+	}
+
+	syncFactory := params.BigSegmentSynchronizerFactory
+	if syncFactory == nil {
+		syncFactory = bigsegments.DefaultBigSegmentSynchronizerFactory
+	}
+	c.bigSegmentSync = syncFactory(
+		httpConfig, store, allConfig.Main.BaseURI.String(), allConfig.Main.StreamURI.String(),
+		envConfig.EnvID, envConfig.SDKKey, c.logger, logPrefix)
+	thingsToCleanUp.AddFunc(c.bigSegmentSync.Close)
+
+	if segmentUpdateCh := c.bigSegmentSync.SegmentUpdatesCh(); segmentUpdateCh != nil {
+		go func() {
+			for range segmentUpdateCh {
+				// BigSegmentSynchronizer sends to this channel after processing a batch of
+				// big segment updates. The value it sends is a list of segment keys, but in
+				// the current implementation, we don't care what those keys are because we'll
+				// just be broadcasting a "ping" to all connected client-side SDKs. In the future
+				// if we have real evaluation streams, we'll need to determine which flags should
+				// be re-evaluated based on the segments.
+				if c.sdkBigSegments != nil {
+					c.sdkBigSegments.ClearCache()
+				}
+				if c.envStreams != nil {
+					c.envStreams.InvalidateClientSideState()
+				}
+				// If we shut down the environment, the BigSegmentSynchronizer will be closed which
+				// will also cause this channel to be closed, exiting this goroutine.
+			}
+		}()
+	}
+	// We deliberately do not call bigSegmentSync.Start() here because we don't want the synchronizer
+	// to start until we know that at least one big segment exists. That's implemented by the
+	// envContextStreamUpdates methods.
+
+	return store, nil
+}
+
 // NewEnvContext creates the internal implementation of EnvContext.
 //
 // It immediately begins trying to initialize the SDK client for this environment. Since that might
@@ -203,50 +275,9 @@ func NewEnvContext(
 		envConfig.EnvID,
 	})
 
-	bigSegmentStoreFactory := params.BigSegmentStoreFactory
-	if bigSegmentStoreFactory == nil {
-		bigSegmentStoreFactory = bigsegments.DefaultBigSegmentStoreFactory
-	}
-	bigSegmentStore, err := bigSegmentStoreFactory(envConfig, allConfig, envLogger)
+	bigSegmentStore, err := envContext.configureBigSegments(params, httpConfig, logPrefix, &thingsToCleanUp)
 	if err != nil {
 		return nil, err
-	}
-	if bigSegmentStore != nil {
-		thingsToCleanUp.AddCloser(bigSegmentStore)
-		envContext.bigSegmentStore = bigSegmentStore
-
-		factory := params.BigSegmentSynchronizerFactory
-		if factory == nil {
-			factory = bigsegments.DefaultBigSegmentSynchronizerFactory
-		}
-		envContext.bigSegmentSync = factory(
-			httpConfig, bigSegmentStore, allConfig.Main.BaseURI.String(), allConfig.Main.StreamURI.String(),
-			envConfig.EnvID, envConfig.SDKKey, envLogger, logPrefix)
-		thingsToCleanUp.AddFunc(envContext.bigSegmentSync.Close)
-		segmentUpdateCh := envContext.bigSegmentSync.SegmentUpdatesCh()
-		if segmentUpdateCh != nil {
-			go func() {
-				for range segmentUpdateCh {
-					// BigSegmentSynchronizer sends to this channel after processing a batch of
-					// big segment updates. The value it sends is a list of segment keys, but in
-					// the current implementation, we don't care what those keys are because we'll
-					// just be broadcasting a "ping" to all connected client-side SDKs. In the future
-					// if we have real evaluation streams, we'll need to determine which flags should
-					// be re-evaluated based on the segments.
-					if envContext.sdkBigSegments != nil {
-						envContext.sdkBigSegments.ClearCache()
-					}
-					if envContext.envStreams != nil {
-						envContext.envStreams.InvalidateClientSideState()
-					}
-					// If we shut down the environment, the BigSegmentSynchronizer will be closed which
-					// will also cause this channel to be closed, exiting this goroutine.
-				}
-			}()
-		}
-		// We deliberate do not call bigSegmentSync.Start() here because we don't want the synchronizer to
-		// start until we know that at least one big segment exists. That's implemented by the
-		// envContextStreamUpdates methods.
 	}
 
 	envStreams := streams.NewEnvStreams(
@@ -803,8 +834,13 @@ func (c *envContextImpl) setBigSegmentsExist() {
 	c.bigSegmentsExist = true
 	c.mu.Unlock()
 
-	if !alreadyExisted && c.bigSegmentSync != nil {
+	if alreadyExisted {
+		return
+	}
+	if c.bigSegmentSync != nil {
 		c.bigSegmentSync.Start()
+	}
+	if c.sdkBigSegments != nil {
 		c.sdkBigSegments.SetPollingActive(true) // has no effect if already active
 	}
 }
@@ -831,7 +867,10 @@ func (q envContextStoreQueries) GetAll(kind ldstoretypes.DataKind) ([]ldstoretyp
 }
 
 func (u *envContextStreamUpdates) handleBigSegments(events []subsystems.Change) {
-	if u.context.bigSegmentSync == nil {
+	// This is gated on the store rather than the synchronizer, because detecting that a big segment
+	// exists is also what starts staleness polling and what makes big segment status visible on the
+	// status endpoint. Both of those are still wanted when synchronization is disabled.
+	if u.context.bigSegmentStore == nil {
 		return
 	}
 

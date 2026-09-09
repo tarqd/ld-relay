@@ -562,6 +562,113 @@ func TestBigSegmentsSynchronizerIsStartedByFullDataUpdateWithBigSegment(t *testi
 	}, time.Second, 10*time.Millisecond, "timed out waiting for big segment store to be available")
 }
 
+// makeBigSegmentUnboundedChangeSet builds a full-transfer change set containing one big
+// (unbounded) segment, which is what triggers Relay's big-segments-exist detection.
+func makeBigSegmentUnboundedChangeSet(t *testing.T) subsystems.ChangeSet {
+	segment := ldbuilders.NewSegmentBuilder("big-segment").Unbounded(true).Generation(1).Build()
+	segmentJSON, err := json.Marshal(segment)
+	require.NoError(t, err)
+
+	changeSetBuilder := subsystems.NewChangeSetBuilder()
+	changeSetBuilder.Start(subsystems.ServerIntent{
+		Payload: subsystems.Payload{
+			ID:     "new-state",
+			Target: 1,
+			Code:   subsystems.IntentTransferFull,
+			Reason: "payload-missing",
+		},
+	})
+	changeSetBuilder.AddPut(subsystems.SegmentKind, segment.Key, segment.Version, segmentJSON)
+	changeSet, err := changeSetBuilder.Finish(subsystems.NewSelector("new-state", 1))
+	require.NoError(t, err)
+	return *changeSet
+}
+
+// newBigSegmentsTestEnv creates an environment whose big segment store always exists, using a mock
+// synchronizer factory so that tests can tell whether a synchronizer was created.
+func newBigSegmentsTestEnv(
+	t *testing.T,
+	allConfig config.Config,
+	envConfig config.EnvConfig,
+	changeSetCh chan subsystems.ChangeSet,
+) (EnvContext, *mockBigSegmentSynchronizerFactory) {
+	fakeBigSegmentStoreFactory := func(config.EnvConfig, config.Config, *slog.Logger) (bigsegments.BigSegmentStore, error) {
+		return bigsegments.NewNullBigSegmentStore(), nil
+	}
+	fakeSynchronizerFactory := &mockBigSegmentSynchronizerFactory{}
+
+	env, err := NewEnvContext(EnvContextImplParams{
+		Identifiers:                   EnvIdentifiers{ConfiguredName: st.EnvMain.Name},
+		EnvConfig:                     envConfig,
+		AllConfig:                     allConfig,
+		BigSegmentStoreFactory:        fakeBigSegmentStoreFactory,
+		BigSegmentSynchronizerFactory: fakeSynchronizerFactory.create,
+		ClientFactory:                 testclient.FakeLDClientFactoryWithChannel(true, nil, changeSetCh),
+		SDKBigSegmentsConfigFactory: ldcomponents.BigSegments(
+			st.ExistingInstance[subsystems.BigSegmentStore](&st.NoOpSDKBigSegmentStore{}),
+		),
+		Logger: slog.Default(),
+	}, nil)
+	require.NoError(t, err)
+	return env, fakeSynchronizerFactory
+}
+
+func TestBigSegmentsSynchronizerIsNotCreatedIfSyncIsDisabled(t *testing.T) {
+	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, nil)
+	defer env.Close()
+
+	assert.Nil(t, fakeSynchronizerFactory.synchronizer,
+		"no synchronizer should be created when big segment synchronization is disabled")
+}
+
+// TestBigSegmentsAreStillUsableWhenSyncIsDisabled covers the decoupling of big-segments-exist
+// detection from the synchronizer's existence. A sync-disabled Relay must still notice that a big
+// segment exists, so that it starts staleness polling and reports big segment status - the store is
+// being written by some other Relay instance that does synchronize.
+func TestBigSegmentsAreStillUsableWhenSyncIsDisabled(t *testing.T) {
+	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+	changeSetCh := make(chan subsystems.ChangeSet, 1)
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, st.EnvMain.Config, changeSetCh)
+	defer env.Close()
+
+	require.Nil(t, fakeSynchronizerFactory.synchronizer)
+
+	// The store is not exposed until a big segment is known to exist, just as when sync is enabled.
+	assert.Nil(t, env.GetBigSegmentStore())
+
+	changeSetCh <- makeBigSegmentUnboundedChangeSet(t)
+
+	require.Eventually(t, func() bool {
+		return env.GetBigSegmentStore() != nil
+	}, time.Second, 10*time.Millisecond, "timed out waiting for big segment store to be available")
+}
+
+func TestBigSegmentSyncCanBeDisabledPerEnvironment(t *testing.T) {
+	envConfig := st.EnvMain.Config
+	envConfig.DisableBigSegmentSync = configtypes.NewOptBool(true)
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, config.Config{}, envConfig, nil)
+	defer env.Close()
+
+	assert.Nil(t, fakeSynchronizerFactory.synchronizer)
+}
+
+func TestBigSegmentSyncCanBeReEnabledPerEnvironment(t *testing.T) {
+	allConfig := config.Config{Main: config.MainConfig{DisableBigSegmentSync: true}}
+	envConfig := st.EnvMain.Config
+	envConfig.DisableBigSegmentSync = configtypes.NewOptBool(false)
+
+	env, fakeSynchronizerFactory := newBigSegmentsTestEnv(t, allConfig, envConfig, nil)
+	defer env.Close()
+
+	require.NotNil(t, fakeSynchronizerFactory.synchronizer,
+		"an environment-level override of false should re-enable synchronization")
+	assert.False(t, fakeSynchronizerFactory.synchronizer.isStarted())
+}
+
 func TestBigSegmentsSynchronizerIsStartedBySingleItemUpdateWithBigSegment(t *testing.T) {
 	envConfig := st.EnvMain.Config
 	allConfig := config.Config{}

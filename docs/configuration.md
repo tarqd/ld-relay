@@ -67,6 +67,7 @@ For **Duration** settings, the value should be be an integer followed by `ms`, `
 | `logLevel`                         | `LOG_LEVEL`                           |  String  | `info`  | Should be `debug`, `info`, `warn`, `error`, or `none`. To learn more, read [Logging](./logging.md).                                                                                                                                                                                                                                                                                                                                                                                |
 | `bigSegmentsStaleAsDegraded`       | `BIG_SEGMENTS_STALE_AS_DEGRADED`      | Boolean  | `false` | Indicates if environments should be considered degraded if Big Segments are not fully synchronized.                                                                                                                                                                                                                                                                                                                                                                                |
 | `bigSegmentsStaleThreshold`        | `BIG_SEGMENTS_STALE_THRESHOLD`        | Duration | `5m`    | Indicates how long until Big Segments should be considered stale.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `disableBigSegmentSync`            | `DISABLE_BIG_SEGMENT_SYNC`            | Boolean  | `false` | Stop the Relay Proxy from synchronizing Big Segment data to the database, while still evaluating Big Segments using data that another Relay Proxy instance writes there. _(10)_                                                                                                                                                                                                                                                                                                     |
 | `expiredCredentialCleanupInterval` | `EXPIRED_CREDENTIAL_CLEANUP_INTERVAL` | Duration | `1m`    | Specifies how often expired credentials for environments are cleaned up. _(5)_                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `pingStreamJitterTime`          | `PING_STREAM_JITTER_TIME`          | Duration | none    | Client SDKs using the ping stream will have pings delayed up to the provided duration. Intermediate pings are discard.                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -81,6 +82,21 @@ _(4)_ For details about `disconnectedStatusTime`, read [Service endpoints - Stat
 _(5)_ Relevant only when using AutoConfig or Offline Mode. In these modes, when an environment's SDK key is rotated in 
 LaunchDarkly, it's possible to specify a deprecation/grace period for the previous key where existing SDKs are still able
 to authorize using that credential. Relay will periodically check for expired credentials and remove them on this interval.
+
+_(10)_ Enabling Redis or DynamoDB implicitly enables Big Segments, and every Relay Proxy instance then opens its own
+Big Segment synchronization stream to LaunchDarkly and writes the same data to the shared database. `disableBigSegmentSync`
+lets you designate which instances do that work. An instance with this option set still reads Big Segment membership from
+the database for client-side evaluations and still reports `bigSegmentStatus` on its status endpoint; it just does not
+synchronize. This is intended for a fleet of read-only Relay Proxy instances that share a database (and therefore the same
+`prefix`, or the same DynamoDB table) with at least one instance that does synchronize. Note that:
+
+* At least one Relay Proxy instance per environment must still have synchronization enabled. Otherwise nothing writes Big
+  Segment data or updates the synchronization timestamp, and Big Segments will evaluate as unavailable or potentially stale
+  everywhere.
+* Because a sync-disabled instance does not observe Big Segment updates as they happen, it does not proactively invalidate
+  its in-memory membership cache or send a "ping" to connected client-side SDKs when membership changes. Membership changes
+  become visible to it when its cache entries expire, within a few seconds.
+* The option can be overridden per environment with `disableBigSegmentSync` in the `[Environment "NAME"]` section.
 
 ### File section: `[AutoConfig]`
 
@@ -187,6 +203,7 @@ The Relay Proxy allows you to proxy any number of LaunchDarkly environments; the
 | `logLevel`       | `LD_LOG_LEVEL_MyEnvName`      |  String  | Should be `debug`, `info`, `warn`, `error`, or `none`. Read: [Logging](./logging.md).**                                                                                                                                                      |
 | `ttl`            | `LD_TTL_MyEnvName`            | Duration | HTTP caching TTL for the PHP polling endpoints. Read: [Using PHP](./php.md).                                                                                                                                                               |                                                                                                                                                              |
 | `projKey`        | `LD_PROJ_KEY_MyEnvName`       |  String  | Project key for this environment. Required if any filters are defined. Filtering is an Enterprise-only feature.                                                                                                                              |
+| `disableBigSegmentSync` | `LD_DISABLE_BIG_SEGMENT_SYNC_MyEnvName` | Boolean | Overrides the `[Main]` section's `disableBigSegmentSync` for this environment only. If unset, the `[Main]` setting applies. Read the `disableBigSegmentSync` note in [File section: `[Main]`](#file-section-main).                    |
 
 In the following examples, there are two environments, each of which has a server-side SDK key and a mobile key. Debug-level logging is enabled for the second one.
 

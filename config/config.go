@@ -203,6 +203,7 @@ type MainConfig struct {
 	LogLevel                         OptLogLevel              `conf:"LOG_LEVEL"`
 	BigSegmentsStaleAsDegraded       bool                     `conf:"BIG_SEGMENTS_STALE_AS_DEGRADED"`
 	BigSegmentsStaleThreshold        ct.OptDuration           `conf:"BIG_SEGMENTS_STALE_THRESHOLD"`
+	DisableBigSegmentSync            bool                     `conf:"DISABLE_BIG_SEGMENT_SYNC"`
 	ExpiredCredentialCleanupInterval ct.OptDuration           `conf:"EXPIRED_CREDENTIAL_CLEANUP_INTERVAL"`
 }
 
@@ -314,6 +315,22 @@ type EnvConfig struct {
 	ProjKey       string           `conf:"LD_PROJ_KEY_"`
 	FilterKey     FilterKey        // injected based on [filters] section
 	Offline       bool             // set to true if this environment was created in offline mode
+
+	// DisableBigSegmentSync overrides MainConfig.DisableBigSegmentSync for this environment. If it
+	// is undefined, the main-level setting applies. Use BigSegmentSyncDisabled to resolve the two.
+	DisableBigSegmentSync ct.OptBool `conf:"LD_DISABLE_BIG_SEGMENT_SYNC_"`
+}
+
+// BigSegmentSyncDisabled reports whether Relay should refrain from running a big segment
+// synchronizer for the given environment.
+//
+// Disabling synchronization does not disable big segments: if a big-segment-capable database is
+// configured, Relay still reads big segment membership from it for client-side evaluations, and
+// still reports big segment status. It only stops Relay from opening its own synchronization stream
+// to LaunchDarkly and writing big segment data to the database, which is what you want for a fleet
+// of read-only Relay instances sharing a database with an instance that does synchronize.
+func BigSegmentSyncDisabled(allConfig Config, envConfig EnvConfig) bool {
+	return envConfig.DisableBigSegmentSync.GetOrElse(allConfig.Main.DisableBigSegmentSync)
 }
 
 type FiltersConfig struct {

@@ -125,6 +125,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 			LogLevel:                         NewOptLogLevel(slog.LevelWarn),
 			BigSegmentsStaleAsDegraded:       true,
 			BigSegmentsStaleThreshold:        ct.NewOptDuration(10 * time.Minute),
+			DisableBigSegmentSync:            true,
 			ExpiredCredentialCleanupInterval: ct.NewOptDuration(1 * time.Minute),
 			PingStreamJitterTime:             ct.NewOptDuration(5 * time.Minute),
 		}
@@ -144,6 +145,9 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 				Prefix:    "earth-",
 				TableName: "earth-table",
 				LogLevel:  NewOptLogLevel(slog.LevelDebug),
+				// Opts this one environment back in to synchronization, overriding the main-level
+				// DisableBigSegmentSync above.
+				DisableBigSegmentSync: ct.NewOptBool(false),
 			},
 			"krypton": {
 				SDKKey:        "krypton-sdk",
@@ -177,6 +181,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 		"LOG_LEVEL":                           "warn",
 		"BIG_SEGMENTS_STALE_AS_DEGRADED":      "true",
 		"BIG_SEGMENTS_STALE_THRESHOLD":        "10m",
+		"DISABLE_BIG_SEGMENT_SYNC":            "true",
 		"USE_EVENTS":                          "1",
 		"EVENTS_HOST":                         "http://events",
 		"EVENTS_FLUSH_INTERVAL":               "120s",
@@ -188,6 +193,7 @@ func makeValidConfigAllBaseProperties() testDataValidConfig {
 		"LD_PREFIX_earth":                     "earth-",
 		"LD_TABLE_NAME_earth":                 "earth-table",
 		"LD_LOG_LEVEL_earth":                  "debug",
+		"LD_DISABLE_BIG_SEGMENT_SYNC_earth":   "false",
 		"LD_ENV_krypton":                      "krypton-sdk",
 		"LD_MOBILE_KEY_krypton":               "krypton-mob",
 		"LD_CLIENT_SIDE_ID_krypton":           "krypton-env",
@@ -221,6 +227,7 @@ TLSMinVersion = "1.2"
 LogLevel = "warn"
 BigSegmentsStaleAsDegraded = 1
 BigSegmentsStaleThreshold = 10m
+DisableBigSegmentSync = 1
 ExpiredCredentialCleanupInterval = 1m
 
 [Events]
@@ -237,6 +244,7 @@ EnvId = "earth-env"
 Prefix = "earth-"
 TableName = "earth-table"
 LogLevel = "debug"
+DisableBigSegmentSync = false
 
 [Environment "krypton"]
 SdkKey = "krypton-sdk"

@@ -8,6 +8,8 @@ To learn more, read [Using a persistent feature store](https://docs.launchdarkly
 
 The Relay Proxy does not support clustered Redis or Redis Sentinel.
 
+Enabling Redis or DynamoDB also enables Big Segments, which means each Relay Proxy node opens its own Big Segment synchronization stream to LaunchDarkly and writes the same data to the shared database. If you are running several nodes against one database, you can set [`disableBigSegmentSync`](./configuration.md#file-section-main) on all but a designated subset of them. Those nodes will still evaluate Big Segments by reading membership from the database, but will not synchronize it themselves. At least one node per environment must still have synchronization enabled.
+
 **Note:** The Redis configurations should also work with [Valkey](https://valkey.io/), as Valkey maintains Redis compatibility.
 
 ```
