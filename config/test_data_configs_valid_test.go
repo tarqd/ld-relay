@@ -73,6 +73,7 @@ func makeValidConfigs() []testDataValidConfig {
 		makeValidConfigExplicitDefaultBaseURI(),
 		makeValidConfigExplicitOldDefaultBaseURI(),
 		makeValidConfigAutoConfig(),
+		makeValidConfigAutoConfigWithCustomURI(),
 		makeValidConfigAutoConfigWithDatabase(),
 		makeValidConfigMaxInboundPayloadSize("50KiB"),
 		makeValidConfigMaxInboundPayloadSize("7MiB"),
@@ -317,6 +318,26 @@ func makeValidConfigExplicitOldDefaultBaseURI() testDataValidConfig {
 	c.fileContent = `
 [Main]
 BaseURI = https://app.launchdarkly.com
+`
+	return c
+}
+
+func makeValidConfigAutoConfigWithCustomURI() testDataValidConfig {
+	c := testDataValidConfig{name: "auto-config properties with custom URI"}
+	c.makeConfig = func(c *Config) {
+		c.AutoConfig = AutoConfigConfig{
+			Key: AutoConfigKey("autokey"),
+			URI: newOptURLAbsoluteMustBeValid("http://custom-auto-config"),
+		}
+	}
+	c.envVars = map[string]string{
+		"AUTO_CONFIG_KEY": "autokey",
+		"AUTO_CONFIG_URI": "http://custom-auto-config",
+	}
+	c.fileContent = `
+[AutoConfig]
+Key = autokey
+URI = http://custom-auto-config
 `
 	return c
 }
