@@ -1,0 +1,26 @@
+name: 'Manual Integration Tests'
+on:
+  workflow_dispatch:
+    inputs:
+      go-version:
+        description: "Go version to use for building Relay (leave empty for latest defined in repo.)"
+        required: false
+        type: string
+      environment:
+        description: "The environment to test against."
+        type: choice
+        options:
+          - 'staging'
+          - 'production'
+
+jobs:
+  go-versions:
+    uses: ./.github/workflows/go-versions.yml
+
+  integration-test:
+    needs: go-versions
+    uses: ./.github/workflows/integration-test.yml
+    with:
+      environment: ${{ inputs.environment }}
+      go-version: ${{ inputs.go-version != '' && inputs.go-version || needs.go-versions.outputs.latest }}
+      branch: ${{ github.ref }}

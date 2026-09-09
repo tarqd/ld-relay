@@ -21,6 +21,7 @@ _testmain.go
 
 ld-relay-private
 ld-relay
+ld-relay-enterprise
 ld-relay.local.conf
 ld-relay.stg.conf
 ld-relay.prod.conf
@@ -31,3 +32,16 @@ ld-relay.prod.conf
 
 pkg
 _out
+
+build
+/bin/
+/dist/
+.idea
+.vscode
+.idea/
+_testservice/testservice
+_testservice/*.pid
+temp_ssh
+.DS_Store
+cover.cov
+coverage.out

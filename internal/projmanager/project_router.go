@@ -1,0 +1,116 @@
+package projmanager
+
+import (
+	"log/slog"
+
+	"github.com/launchdarkly/ld-relay/v9/config"
+	"github.com/launchdarkly/ld-relay/v9/internal/autoconfig"
+	"github.com/launchdarkly/ld-relay/v9/internal/envfactory"
+)
+
+var _ autoconfig.MessageHandler = &ProjectRouter{}
+
+// AutoConfigActions represents all possible concrete actions that may occur based on autoconfig messages.
+type AutoConfigActions interface {
+	EnvironmentActions
+	ReceivedAllEnvironments()
+}
+
+// ProjectRouter is responsible for accepting commands relating to the creation, destruction, or modification of
+// environments and filters, and then forwarding them to a ProjectManager based on the environment/filter's project key.
+type ProjectRouter struct {
+	managers map[string]*EnvironmentManager
+	actions  AutoConfigActions
+	logger   *slog.Logger
+}
+
+func (e *ProjectRouter) Manager(projKey string) *EnvironmentManager {
+	return e.managers[projKey]
+}
+
+func (e *ProjectRouter) Projects() []string {
+	projects := make([]string, 0, len(e.managers))
+	for proj := range e.managers {
+		projects = append(projects, proj)
+	}
+	return projects
+}
+
+// NewProjectRouter creates a new router which is ready to accept commands.
+func NewProjectRouter(handler AutoConfigActions, logger *slog.Logger) *ProjectRouter {
+	logger = logger.With("component", "ProjectRouter")
+	return &ProjectRouter{managers: make(map[string]*EnvironmentManager), actions: handler, logger: logger}
+}
+
+// AddEnvironment routes the given EnvironmentParams to the relevant ProjectManager based on its project key, or instantiates
+// a new ProjectManager if one doesn't already exist.
+func (e *ProjectRouter) AddEnvironment(params envfactory.EnvironmentParams) {
+	proj := params.Identifiers.ProjKey
+	manager, ok := e.managers[proj]
+	if !ok {
+		e.managers[proj] = NewEnvironmentManager(proj, e.actions, e.logger)
+		manager = e.managers[proj]
+	}
+	manager.AddEnvironment(params)
+}
+
+// UpdateEnvironment routes the given EnvironmentParams to the relevant ProjectManager based on its project key.
+// If no such manager exists, the params are ignored and an error is logged.
+func (e *ProjectRouter) UpdateEnvironment(params envfactory.EnvironmentParams) {
+	proj := params.Identifiers.ProjKey
+	manager, ok := e.managers[proj]
+	if ok {
+		manager.UpdateEnvironment(params)
+	} else {
+		e.logger.Error("precondition violation: received updated config, but environment was never added", "environment", params.Identifiers.GetDisplayName())
+	}
+}
+
+// DeleteEnvironment dispatches a deletion command for the given environment ID to all ProjectManagers. It is
+// assumed that environment IDs are unique, and therefore only one manager will service the request.
+func (e *ProjectRouter) DeleteEnvironment(id config.EnvironmentID) {
+	deleteCount := 0
+	for _, manager := range e.managers {
+		if manager.DeleteEnvironment(id) {
+			deleteCount++
+		}
+	}
+	if deleteCount == 0 {
+		e.logger.Error("precondition violation: received delete request for environment, but it is not under management", "envID", id)
+	} else if deleteCount > 1 {
+		e.logger.Error("precondition violation: received delete request for environment, which was associated with more than one project", "envID", id)
+	}
+}
+
+// ReceivedAllEnvironments directly invokes the underlying AutoConfigAction's ReceivedAllEnvironments method.
+func (e *ProjectRouter) ReceivedAllEnvironments() {
+	e.actions.ReceivedAllEnvironments()
+}
+
+// AddFilter routes the given FilterRep to the relevant ProjectManager based on its project key, or instantiates
+// a new ProjectManager if one doesn't already exist.
+func (e *ProjectRouter) AddFilter(params envfactory.FilterParams) {
+	proj := params.ProjKey
+	manager, ok := e.managers[proj]
+	if !ok {
+		e.managers[proj] = NewEnvironmentManager(proj, e.actions, e.logger)
+		manager = e.managers[proj]
+	}
+	manager.AddFilter(params)
+}
+
+// DeleteFilter dispatches a deletion command for the given filter ID to all ProjectManagers. It is
+// assumed that filter IDs are unique, and therefore only one manager will service the request.
+func (e *ProjectRouter) DeleteFilter(id config.FilterID) {
+	deleteCount := 0
+	for _, manager := range e.managers {
+		if manager.DeleteFilter(id) {
+			deleteCount++
+		}
+	}
+	if deleteCount == 0 {
+		e.logger.Error("precondition violation: received delete request for filter, but it is not under management", "filterID", id)
+	} else if deleteCount > 1 {
+		e.logger.Error("precondition violation: received delete request for filter, which was associated with more than one project", "filterID", id)
+	}
+}

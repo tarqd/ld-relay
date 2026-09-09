@@ -1,0 +1,65 @@
+name: Common CI
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: "Go version to use for the jobs."
+        required: true
+        type: string
+      store:
+        description: "Store type (Redis or Valkey)."
+        required: false
+        type: string
+        default: 'Redis'
+      redis:
+        description: "Whether to start Redis."
+        required: false
+        type: boolean
+        default: false
+      valkey:
+        description: "Whether to start Valkey."
+        required: false
+        type: boolean
+        default: false
+      valkey_port:
+        description: "Port for Valkey."
+        required: false
+        type: string
+        default: ""
+      suffix:
+        description: "Suffix for test/coverage artifacts."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    name: ${{ format('Unit Tests ({0})', inputs.store) }}
+    steps:
+      - uses: launchdarkly/gh-actions/actions/persistent-stores@persistent-stores-v0.2.0
+        with:
+          dynamodb: true
+          redis: ${{ inputs.redis }}
+          valkey: ${{ inputs.valkey }}
+          valkey_port: ${{ inputs.valkey_port }}
+      - uses: actions/checkout@v4
+      - name: Setup Go ${{ inputs.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+      - uses: ./.github/actions/unit-tests
+        with:
+          lint: 'true'
+          coverage: 'true'
+          suffix: ${{ inputs.suffix }}
+
+  benchmarks:
+    name: ${{ format('Benchmarks ({0})', inputs.store) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/benchmarks
+        with:
+          go-version: ${{ inputs.go-version }}
+          suffix: ${{ inputs.suffix }}

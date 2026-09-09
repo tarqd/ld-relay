@@ -1,0 +1,15 @@
+name: Lint PR title
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - synchronize
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint-pr-title:
+    uses: launchdarkly/gh-actions/.github/workflows/lint-pr-title.yml@main

@@ -1,0 +1,74 @@
+// Package testenv contains test helpers that reference the relayenv package. These are in sharedtest/testenv
+// rather than just sharedtest so that sharedtest can be used by relayenv itself without a circular reference.
+package testenv
+
+import (
+	"log/slog"
+	"time"
+
+	"github.com/launchdarkly/ld-relay/v9/config"
+	"github.com/launchdarkly/ld-relay/v9/internal/relayenv"
+	"github.com/launchdarkly/ld-relay/v9/internal/sdks"
+	"github.com/launchdarkly/ld-relay/v9/internal/sharedtest"
+	"github.com/launchdarkly/ld-relay/v9/internal/sharedtest/testclient"
+
+	"github.com/launchdarkly/go-server-sdk/v7/subsystems"
+	helpers "github.com/launchdarkly/go-test-helpers/v3"
+)
+
+func NewTestEnvContext(name string, shouldBeInitialized bool, store subsystems.DataStore) relayenv.EnvContext {
+	return NewTestEnvContextWithClientFactory(name, testclient.FakeLDClientFactory(shouldBeInitialized), store)
+}
+
+func NewTestEnvContextWithClientFactory(
+	name string,
+	f sdks.ClientFactoryFunc,
+	store subsystems.DataStore,
+) relayenv.EnvContext {
+	var dataStoreFactory subsystems.ComponentConfigurer[subsystems.DataStore] = nil
+	if store != nil {
+		dataStoreFactory = sharedtest.ExistingInstance(store)
+	}
+	readyCh := make(chan relayenv.EnvContext)
+	_, err := relayenv.NewEnvContext(relayenv.EnvContextImplParams{
+		Identifiers:      relayenv.EnvIdentifiers{ConfiguredName: name},
+		ClientFactory:    f,
+		DataStoreFactory: dataStoreFactory,
+		UserAgent:        "fake-user-agent",
+		Logger:           slog.Default(),
+	}, readyCh)
+	if err != nil {
+		panic(err)
+	}
+	if c, ok, _ := helpers.TryReceive(readyCh, time.Second); ok {
+		return c
+	}
+	panic("timed out waiting for client initialization")
+}
+
+func NewTestEnvContextWithEnvConfig(name string, envConfig config.EnvConfig, shouldBeInitialized bool, store subsystems.DataStore) relayenv.EnvContext {
+	var dataStoreFactory subsystems.ComponentConfigurer[subsystems.DataStore] = nil
+	if store != nil {
+		dataStoreFactory = sharedtest.ExistingInstance(store)
+	}
+	readyCh := make(chan relayenv.EnvContext)
+	_, err := relayenv.NewEnvContext(relayenv.EnvContextImplParams{
+		Identifiers:      relayenv.EnvIdentifiers{ConfiguredName: name},
+		EnvConfig:        envConfig,
+		ClientFactory:    testclient.FakeLDClientFactory(shouldBeInitialized),
+		DataStoreFactory: dataStoreFactory,
+		UserAgent:        "fake-user-agent",
+		Logger:           slog.Default(),
+	}, readyCh)
+	if err != nil {
+		panic(err)
+	}
+	if c, ok, _ := helpers.TryReceive(readyCh, time.Second); ok {
+		return c
+	}
+	panic("timed out waiting for client initialization")
+}
+
+func MakeTestContextWithData() relayenv.EnvContext {
+	return NewTestEnvContext("", true, sharedtest.MakeStoreWithData(true))
+}

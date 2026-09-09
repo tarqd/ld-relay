@@ -1,0 +1,11 @@
+FROM centos
+
+COPY dist/ld-relay*x86_64.rpm .
+
+RUN rpm -Uvh ld-relay*x86_64.rpm
+
+RUN systemctl enable ld-relay.service
+
+EXPOSE 8030
+
+CMD /sbin/init

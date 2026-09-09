@@ -1,0 +1,199 @@
+package filedata
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/launchdarkly/ld-relay/v9/config"
+	"github.com/launchdarkly/ld-relay/v9/internal/logging/logtest"
+
+	helpers "github.com/launchdarkly/go-test-helpers/v3"
+
+	"github.com/stretchr/testify/assert"
+)
+
+const (
+	testMonitoringInterval = time.Millisecond * 10
+)
+
+type archiveManagerTestParams struct {
+	t                   *testing.T
+	filePath            string
+	archiveManager      *ArchiveManager
+	archiveManagerError error
+	messageHandler      *testMessageHandler
+	mockLog             *logtest.MockHandler
+}
+
+type deleteMessage struct {
+	config.EnvironmentID
+	config.FilterKey
+}
+type testMessage struct {
+	id     config.EnvironmentID
+	add    *ArchiveEnvironment
+	update *ArchiveEnvironment
+	failed *envFailedMessage
+	delete *deleteMessage
+}
+
+type envFailedMessage struct {
+	envID config.EnvironmentID
+	err   error
+}
+
+func archiveManagerTest(t *testing.T, setupFile func(filePath string), action func(p archiveManagerTestParams)) {
+	helpers.WithTempFile(func(filePath string) {
+		_ = os.Remove(filePath) // used WithTempFile to generate a path, but don't want a file by default
+		setupFile(filePath)
+
+		logger, mockHandler := logtest.NewMockLogger()
+
+		messageHandler := newTestMessageHandler()
+
+		archiveManager, err := NewArchiveManager(
+			filePath,
+			messageHandler,
+			testMonitoringInterval,
+			logger,
+		)
+		if archiveManager != nil {
+			defer archiveManager.Close()
+		}
+
+		params := archiveManagerTestParams{t, filePath, archiveManager, err, messageHandler, mockHandler}
+		action(params)
+	})
+}
+
+func (m testMessage) String() string {
+	if m.add != nil {
+		return fmt.Sprintf("add(%+v)", *m.add)
+	}
+	if m.update != nil {
+		return fmt.Sprintf("update(%+v)", *m.update)
+	}
+	if m.failed != nil {
+		return fmt.Sprintf("failed(%s,%s)", string(m.failed.envID), m.failed.err)
+	}
+	if m.delete != nil {
+		return fmt.Sprintf("delete(%+v)", *m.delete)
+	}
+	return "???"
+}
+
+type testMessageHandler struct {
+	received chan testMessage
+}
+
+func newTestMessageHandler() *testMessageHandler {
+	return &testMessageHandler{
+		received: make(chan testMessage, 10),
+	}
+}
+
+func (h *testMessageHandler) AddEnvironment(params ArchiveEnvironment) {
+	h.received <- testMessage{id: params.Params.EnvID, add: &params}
+}
+
+func (h *testMessageHandler) UpdateEnvironment(params ArchiveEnvironment) {
+	h.received <- testMessage{id: params.Params.EnvID, update: &params}
+}
+
+func (h *testMessageHandler) EnvironmentFailed(id config.EnvironmentID, err error) {
+	h.received <- testMessage{id: id, failed: &envFailedMessage{id, err}}
+}
+
+func (h *testMessageHandler) DeleteEnvironment(id config.EnvironmentID, filter config.FilterKey) {
+	h.received <- testMessage{id: id, delete: &deleteMessage{id, filter}}
+}
+
+func sortMessages(messages []testMessage) []testMessage {
+	ret := make([]testMessage, len(messages))
+	copy(ret, messages)
+	sort.Slice(ret, func(i, j int) bool { return ret[i].id < ret[j].id })
+	return ret
+}
+
+func (p archiveManagerTestParams) requireMessage() testMessage {
+	return helpers.RequireValue(p.t, p.messageHandler.received, 2*time.Second, "timed out waiting for message")
+}
+
+func (p archiveManagerTestParams) requireNoMoreMessages() {
+	if !helpers.AssertNoMoreValues(p.t, p.messageHandler.received, 50*time.Millisecond, "received unexpected message") {
+		p.t.FailNow()
+	}
+}
+
+func (p archiveManagerTestParams) expectReloaded() {
+	assert.Eventually(p.t, func() bool {
+		return p.mockLog.HasMessage(slog.LevelWarn, "reloaded data")
+	}, 5*time.Second, 100*time.Millisecond)
+}
+
+func (p archiveManagerTestParams) expectEnvironmentsAdded(envs ...testEnv) {
+	var messages []testMessage
+	for range envs {
+		messages = append(messages, p.requireMessage())
+	}
+	p.requireNoMoreMessages()
+	messages = sortMessages(messages)
+
+	for i, te := range sortTestEnvs(envs) {
+		p.t.Run(fmt.Sprintf("added environment %d", i+1), func(t *testing.T) {
+			msg := messages[i]
+			assert.Equal(p.t, te.id(), msg.id)
+			assert.NotNil(p.t, msg.add)
+			verifyEnvironmentData(t, te, *msg.add)
+
+			assert.True(t, p.mockLog.HasMessage(slog.LevelInfo, "added environment"))
+		})
+	}
+}
+
+func (p archiveManagerTestParams) expectEnvironmentsUpdated(envs ...testEnv) {
+	var messages []testMessage
+	for range envs {
+		messages = append(messages, p.requireMessage())
+	}
+	p.requireNoMoreMessages()
+	messages = sortMessages(messages)
+
+	for i, te := range sortTestEnvs(envs) {
+		p.t.Run(fmt.Sprintf("updated environment %d", i+1), func(t *testing.T) {
+			msg := messages[i]
+			assert.Equal(p.t, te.id(), msg.id)
+			assert.NotNil(p.t, msg.update)
+			verifyEnvironmentData(t, te, *msg.update)
+
+			assert.True(t, p.mockLog.HasMessage(slog.LevelInfo, "updated environment"))
+		})
+	}
+}
+
+func (p archiveManagerTestParams) expectEnvironmentsDeleted(ids ...config.EnvironmentID) {
+	sortedIDs := make([]config.EnvironmentID, 0, len(ids))
+	copy(sortedIDs, ids)
+	sort.Slice(sortedIDs, func(i, j int) bool { return sortedIDs[i] < sortedIDs[j] })
+
+	var messages []testMessage
+	for range ids {
+		messages = append(messages, p.requireMessage())
+	}
+	p.requireNoMoreMessages()
+	messages = sortMessages(messages)
+
+	for i, id := range sortedIDs {
+		p.t.Run(fmt.Sprintf("deleted environment %d", i+1), func(t *testing.T) {
+			msg := messages[i]
+			assert.NotNil(p.t, msg.delete)
+			assert.Equal(p.t, id, *msg.delete)
+
+			assert.True(t, p.mockLog.HasMessage(slog.LevelInfo, "removed environment"))
+		})
+	}
+}

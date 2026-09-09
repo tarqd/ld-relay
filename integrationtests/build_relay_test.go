@@ -1,0 +1,64 @@
+//go:build integrationtests
+
+package integrationtests
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"regexp"
+	"strings"
+
+	"github.com/launchdarkly/ld-relay/v9/integrationtests/docker"
+	"github.com/launchdarkly/ld-relay/v9/integrationtests/oshelpers"
+)
+
+const (
+	relayDockerImageName   = "launchdarkly/ld-relay"
+	relayPrivateGitRepoURL = "git@github.com:launchdarkly/ld-relay-private.git"
+	tempCheckoutName       = "relay"
+)
+
+// Create or copy a local Docker container for running Relay. The relayTagOrSHA parameter can be:
+//
+// 1. an empty string, meaning we should build from the current working copy, creating a new image name.
+// 2. a version tag, meaning we should use the published Docker image with that tag.
+// 3. a Git commit SHA in the private Relay repository.
+//
+// The function returns the name of the container.
+func getRelayDockerImage(relayTagOrSHA string, logger *slog.Logger) (*docker.Image, error) {
+	if relayTagOrSHA == "" {
+		logger.Info("building Relay Docker image from current working copy")
+		dir, err := getGitRepoBaseDir()
+		if err != nil {
+			return nil, err
+		}
+		return docker.NewImageBuilder(dir).Build()
+	}
+
+	if matched, _ := regexp.MatchString("[0-9]+\\.[0-9]+\\.[0-9]+.*", relayTagOrSHA); matched {
+		// Try to get a published image tagged with this version.
+		logger.Info("using published Relay Docker image", "version", relayTagOrSHA)
+		tag := fmt.Sprintf("%s:%s", relayDockerImageName, relayTagOrSHA)
+		return docker.PullImage(tag)
+	}
+
+	// Assume it is the SHA of a Git commit - try to check it out in a temporary directory
+	logger.Info("building Relay Docker image from private tag or branch", "ref", relayTagOrSHA)
+	path, err := os.MkdirTemp("", "relay-integration-test-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(path)
+	if err := oshelpers.Command("git", "clone", relayPrivateGitRepoURL, tempCheckoutName).
+		WorkingDir(oshelpers.DirPath(path)).Run(); err != nil {
+		return nil, err
+	}
+	checkoutDir := oshelpers.DirPath(path + string(os.PathSeparator) + tempCheckoutName)
+	return docker.NewImageBuilder(checkoutDir).Build()
+}
+
+func getGitRepoBaseDir() (oshelpers.DirPath, error) {
+	out, err := oshelpers.Command("git", "rev-parse", "--show-toplevel").RunAndGetOutput()
+	return oshelpers.DirPath(strings.TrimSpace(string(out))), err
+}

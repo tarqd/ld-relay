@@ -1,0 +1,31 @@
+name: Benchmarks
+description: "Runs Relay's performance benchmarks."
+inputs:
+  go-version:
+    description: 'Go version to use for build & test.'
+    required: true
+  suffix:
+    description: 'Suffix for artifact names to differentiate test runs.'
+    required: false
+    default: ''
+
+
+runs:
+  using: composite
+  steps:
+      - name: Setup Go ${{ inputs.go-version }}
+        uses: actions/setup-go@v5
+        with:
+            go-version: ${{ inputs.go-version }}
+
+      - name: Run Benchmarks
+        id: benchmarks
+        shell: bash
+        run: make benchmarks | tee benchmarks.txt
+
+      - name: Upload Results
+        if: steps.benchmarks.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+            name: Benchmarks-go${{ inputs.go-version }}${{ inputs.suffix && format('-{0}', inputs.suffix) || '' }}
+            path: benchmarks.txt

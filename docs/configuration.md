@@ -1,0 +1,327 @@
+# LaunchDarkly Relay Proxy - Configuration
+
+[(Back to README)](../README.md)
+
+Configuration options may be passed in a file, or in environment variables, or both. To learn more, read [Configuring the Relay Proxy](https://docs.launchdarkly.com/home/relay-proxy/deploying#configuring-the-relay-proxy).
+
+The command-line arguments for these work as follows:
+
+* If you pass no arguments at all, it will attempt to load `/etc/ld-relay.conf`.
+* If you pass `--config FILEPATH`, it will load that file. The file must exist.
+* If you pass `--config FILEPATH --allow-missing-file`, it will try to load the file only if the file exists.
+* If you pass `--from-env`, it will read configuration options from environment variables.
+* If you pass both `--config` and `--from-env`, it will both load the specified file and use the environment variables. The environment variables will override any equivalent options from the file.
+
+An example of why you might use both configuration modes together is if you want to deploy a `base.conf` file that contains all of the global configuration for your relay instance, but for security reasons you do not want your SDK key to appear in that file. Assuming that the name you gave your LaunchDarkly environment in the file is "production," your command line might look like this:
+
+```shell
+LD_ENV_production={your_SDK_key} ./ld-relay --config base.conf --from-env
+```
+
+Or, you might wish to create a package containing the `ld-relay` binary and a file with some basic options, which you will be reusing in different contexts with completely different sets of environments. You could completely omit the environment configuration from the file, and pass it all in variables:
+
+```shell
+LD_ENV_firstenv={SDK key for firstenv} LD_PREFIX_firstenv={Redis prefix for firstenv} \
+  LD_ENV_secondenv={SDK key for secondenv} LD_PREFIX_secondenv={Redis prefix for secondenv} \
+  ./ld-relay --config base.conf --from-env
+```
+
+
+## Configuration file format and environment variables
+
+The configuration file format is an INI-like one, based on [Git configuration format](https://git-scm.com/docs/git-config#_syntax) (as implemented by the [gcfg](https://github.com/go-gcfg/gcfg) package).
+
+Every configuration file option has an equivalent environment variable.
+
+
+### Allowable values for types
+
+For **Boolean** settings, Relay Proxy considers a value of either `true` or `1` as true. Relay Proxy considers a value of `false`, `0`, or an empty value as false. Any other value is invalid.
+
+For **Duration** settings, the value should be be an integer followed by `ms`, `s`, `m`, or `h` for milliseconds, seconds, minutes, or hours. For example: `30s` for 30 seconds. Or, you can combine these. For example: `1m30s`. You cannot specify a number by itself without a unit.
+
+**URI** settings will cause an error if you specify a value that is an invalid URI, or a relative URI.
+
+
+### File section: `[Main]`
+
+| Property in file                   | Environment var                       |   Type   | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+|------------------------------------|---------------------------------------|:--------:|:--------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `streamUri`                        | `STREAM_URI`                          |   URI    | _(1)_   | URI for the LaunchDarkly streaming service.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `baseUri`                          | `BASE_URI`                            |   URI    | _(1)_   | URI for the LaunchDarkly polling service for server-side SDKs.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `clientSideBaseUri`                | `CLIENT_SIDE_BASE_URI`                |   URI    | _(1)_   | URI for the LaunchDarkly polling service for client-side SDKs.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `exitOnError`                      | `EXIT_ON_ERROR`                       | Boolean  | `false` | Close the Relay Proxy if it encounters any error during initialization. The default behavior is that it will terminate with a non-zero exit code if the configuration options are completely invalid, or if there is an incorrect `AutoConfig` key, but will remain running if there is an error specific to one environment, such as an invalid SDK key. Setting this option to `true` makes it terminate in both cases.                                                          |
+| `exitAlways`                       | `EXIT_ALWAYS`                         | Boolean  | `false` | Close the Relay Proxy immediately after initializing all environments. Do not start an HTTP server. _(2)_                                                                                                                                                                                                                                                                                                                                                                          |
+| `ignoreConnectionErrors`           | `IGNORE_CONNECTION_ERRORS`            | Boolean  | `false` | Ignore any initial connectivity issues with LaunchDarkly. Best used when network connectivity is not reliable.                                                                                                                                                                                                                                                                                                                                                                     |
+| `port`                             | `PORT`                                |  Number  | `8030`  | Port the Relay Proxy should listen on.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `initTimeout`                      | `INIT_TIMEOUT`                        | Duration | `10s`   | How long the Relay Proxy should wait for an initial connection to LaunchDarkly. If this timeout elapses, the behavior depends on `ignoreConnectionErrors`: by default, it will quit, but if `ignoreConnectionErrors` is true it will go on trying to connect in the background while still allowing clients to connect to the Relay Proxy. To learn more, read [How connections are handled in error conditions](./proxy-mode.md#how-connections-are-handled-in-error-conditions). |
+| `gracefulShutdownTimeout`          | `GRACEFUL_SHUTDOWN_TIMEOUT`           | Duration | `30s`   | How long the Relay Proxy should wait for active connections to complete before forcefully shutting down when receiving a termination signal. This allows for graceful shutdown of the server, ensuring that in-flight requests are completed. The value should be a duration string like `30s` or `1m`.                                                                                                                                                                              |
+| `heartbeatInterval`                | `HEARTBEAT_INTERVAL`                  |  Number  | `3m`    | Interval for heartbeat messages to prevent read timeouts on streaming connections. Assumed to be in seconds if no unit is specified.                                                                                                                                                                                                                                                                                                                                               |
+| `maxClientConnectionTime`          | `MAX_CLIENT_CONNECTION_TIME`          | Duration | none    | Maximum amount of time that Relay will allow a streaming connection from an SDK client to remain open. _(3)_                                                                                                                                                                                                                                                                                                                                                                       |
+| `maxClientRequestBodySize`         | `MAX_CLIENT_REQUEST_BODY_SIZE`        |   Unit   | `5MiB`  | Maximum size of a `REPORT` request body that Relay will read when evaluating flags for a client-side, mobile, or server-side SDK. _(9)_                                                                                                                                                                                                                                                                                                                                            |
+| `disconnectedStatusTime`           | `DISCONNECTED_STATUS_TIME`            | Duration | `1m`    | How long a stream connection can be interrupted before Relay reports the status as "disconnected." _(4)_                                                                                                                                                                                                                                                                                                                                                                           |
+| `tlsEnabled`                       | `TLS_ENABLED`                         | Boolean  | `false` | Enable TLS on the Relay Proxy. Read: [Using TLS](./tls.md).                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `tlsCert`                          | `TLS_CERT`                            |  String  |         | Required if `tlsEnabled` is true. Path to TLS certificate file.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `tlsKey`                           | `TLS_KEY`                             |  String  |         | Required if `tlsEnabled` is true. Path to TLS private key file.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `tlsMinVersion`                    | `TLS_MIN_VERSION`                     |  String  |         | Set to "1.2", etc., to enforce a minimum TLS version for secure requests.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `logLevel`                         | `LOG_LEVEL`                           |  String  | `info`  | Should be `debug`, `info`, `warn`, `error`, or `none`. To learn more, read [Logging](./logging.md).                                                                                                                                                                                                                                                                                                                                                                                |
+| `bigSegmentsStaleAsDegraded`       | `BIG_SEGMENTS_STALE_AS_DEGRADED`      | Boolean  | `false` | Indicates if environments should be considered degraded if Big Segments are not fully synchronized.                                                                                                                                                                                                                                                                                                                                                                                |
+| `bigSegmentsStaleThreshold`        | `BIG_SEGMENTS_STALE_THRESHOLD`        | Duration | `5m`    | Indicates how long until Big Segments should be considered stale.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `expiredCredentialCleanupInterval` | `EXPIRED_CREDENTIAL_CLEANUP_INTERVAL` | Duration | `1m`    | Specifies how often expired credentials for environments are cleaned up. _(5)_                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pingStreamJitterTime`          | `PING_STREAM_JITTER_TIME`          | Duration | none    | Client SDKs using the ping stream will have pings delayed up to the provided duration. Intermediate pings are discard.                                                                                                                                                                                                                                                                                                                                                                   |
+
+_(1)_ The default values for `streamUri`, `baseUri`, and `clientSideBaseUri` are `https://stream.launchdarkly.com`, `https://sdk.launchdarkly.com`, and `https://clientsdk.launchdarkly.com`, respectively. You should never need to change these URIs unless you are either using a special instance of the LaunchDarkly service, in which case Support will tell you how to set them, or you are accessing LaunchDarkly using a reverse proxy or some other mechanism that rewrites URLs.
+
+_(2)_ The `exitAlways` mode is intended for use cases where you do not want to maintain a long-running Relay Proxy instance, but only execute it at specific times to get flags. This is only useful if you have enabled Redis or another database, so that it will store the flags there.
+
+_(3)_ The optional `maxClientConnectionTime` setting may be useful in load-balanced environments, to avoid having stream connections pile up excessively on one instance when other instances are removed or restarted. If you tell the Relay Proxy to automatically close every stream connection after some amount of time, this will cause the SDK client that made the connection to reconnect, so that the load balancer can potentially direct it to a different instance.
+
+_(4)_ For details about `disconnectedStatusTime`, read [Service endpoints - Status (health check)](./endpoints.md#status-health-check).
+
+_(5)_ Relevant only when using AutoConfig or Offline Mode. In these modes, when an environment's SDK key is rotated in 
+LaunchDarkly, it's possible to specify a deprecation/grace period for the previous key where existing SDKs are still able
+to authorize using that credential. Relay will periodically check for expired credentials and remove them on this interval.
+
+### File section: `[AutoConfig]`
+
+This section is only applicable if [automatic configuration](https://docs.launchdarkly.com/home/advanced/relay-proxy-enterprise/automatic-configuration) is enabled for your account.
+
+| Property in file         | Environment var                       |  Type   | Default | Description                                                                                                                                                                                                                         |
+|--------------------------|---------------------------------------|:-------:|:--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `key`                    | `AUTO_CONFIG_KEY`                     | String  |         | A valid Relay Proxy automatic configuration key.                                                                                                                                                                                    |
+| `cacheKey`               | `AUTO_CONFIG_CACHE_KEY`                | String  |         | Enables AutoConfig caching in the persistent store (Redis/Valkey or DynamoDB). Requires Redis or DynamoDB. Multiple Relay instances can share the same store by using different cache keys. _(7)_ |
+| `cacheEncryptionKey`     | `AUTO_CONFIG_CACHE_ENCRYPTION_KEY`    | String  | _(auto)_ | Encrypts cached AutoConfig data. must be a high-entropy secret  (e.g., from openssl rand -base64 32 or a password manager). This value is not processed through a password-hardening KDF. _(7)_ |
+| `envDatastorePrefix`     | `ENV_DATASTORE_PREFIX`                | String  |         | If using a Redis, Consul, or DynamoDB store, this string will be added to all database keys to distinguish them from any other environments that are using the database. _(6)_                                                      |
+| `envDatastoreTableName ` | `ENV_DATASTORE_TABLE_NAME`            | String  |         | If using a DynamoDB store, this specifies the table name. _(6)_                                                                                                                                                                     |
+| `envAllowedOrigin`       | `ENV_ALLOWED_ORIGIN`                  |  URI    |         | If provided, adds CORS headers to prevent access from other domains. This variable can be provided multiple times per environment (if using the `ENV_ALLOWED_ORIGIN` variable, specify a comma-delimited list).                     |
+| `envAllowedHeader`       | `ENV_ALLOWED_HEADER`                  | String  |         | If provided, adds the specify headers to the list of accepted headers for CORS requests. This variable can be provided multiple times per environment (if using the `ENV_ALLOWED_HEADER` variable, specify a comma-delimited list). |
+
+_(6)_ When using a database store, if there are multiple environments, it is necessary to have a different prefix for each environment (or, if using DynamoDB, a different table name). The `envDataStorePrefix` and `envDatastoreTableName` properties support this by recognizing the special symbol `$CID` as a placeholder for the environment's client-side ID. For instance, if an environment's ID is `1234567890abcdef` and you set `envDatastorePrefix` to `ld-flags-$CID`, the actual prefix used for that environment will be `ld-flags-1234567890abcdef`.
+
+_(7)_ When `cacheKey` is set, Relay races a cache read against the LaunchDarkly stream connection at startup. If the cache returns first, Relay can serve traffic immediately while the stream connects. Stream updates are persisted to the cache as they arrive. Cached data is encrypted with `cacheEncryptionKey` (or the AutoConfig key if omitted). 
+
+
+### File section: `[OfflineMode]`
+
+This section is only applicable if [offline mode](https://docs.launchdarkly.com/home/advanced/relay-proxy-enterprise/offline) is enabled for your account.
+
+| Property in file                   | Environment var                        |   Type   | Default | Description                                                                                                                                                                                                                         |
+|------------------------------------|----------------------------------------|:--------:|:--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `fileDataSource`                   | `FILE_DATA_SOURCE`                     |  String  |         | Path to the offline mode data file that you have downloaded from LaunchDarkly.                                                                                                                                                      |
+| `fileDataSourceMonitoringInterval` | `FILE_DATA_SOURCE_MONITORING_INTERVAL` | Duration | `1s`    | How often the file data source is checked for changes. Minimum is 100ms. To reduce computation and syscalls, raise the interval (for example, `5m` for every 5 minutes.)                                                            |
+| `envDatastorePrefix`               | `ENV_DATASTORE_PREFIX`                 |  String  |         | If using a Redis, Consul, or DynamoDB store, this string will be added to all database keys to distinguish them from any other environments that are using the database. _(6)_                                                      |
+| `envDatastoreTableName `           | `ENV_DATASTORE_TABLE_NAME`             |  String  |         | If using a DynamoDB store, this specifies the table name. _(6)_                                                                                                                                                                     |
+| `envAllowedOrigin`                 | `ENV_ALLOWED_ORIGIN`                   |   URI    |         | If provided, adds CORS headers to prevent access from other domains. This variable can be provided multiple times per environment (if using the `ENV_ALLOWED_ORIGIN` variable, specify a comma-delimited list).                     |
+| `envAllowedHeader`                 | `ENV_ALLOWED_HEADER`                   |  String  |         | If provided, adds the specify headers to the list of accepted headers for CORS requests. This variable can be provided multiple times per environment (if using the `ENV_ALLOWED_HEADER` variable, specify a comma-delimited list). |
+
+Note that the last three properties have the same meanings and the same environment variables names as the corresponding properties in the `[AutoConfig]` section described above. It is not possible to use `[OfflineMode]` and `[AutoConfig]` at the same time.
+
+
+### File section: `[Events]`
+
+To learn more, read [Forwarding events](./events.md).
+
+| Property in file              | Environment var                      |   Type   | Default | Description                                                                                                                                                                                                               |
+|-------------------------------|--------------------------------------|:--------:|:--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `sendEvents`                  | `USE_EVENTS`                         | Boolean  | `false` | When enabled, the Relay Proxy will send analytic events it receives to LaunchDarkly, unless offline mode is enabled.                                                                                                      |
+| `eventsUri`                   | `EVENTS_HOST`                        |   URI    | _(7)_   | URI for the LaunchDarkly events service                                                                                                                                                                                   |
+| `flushInterval`               | `EVENTS_FLUSH_INTERVAL`              | Duration | `5s`    | Controls how long the SDK buffers events before sending them back to our server. If your server generates many events per second, we suggest decreasing the flush interval and/or increasing capacity to meet your needs. |
+| `capacity`                    | `EVENTS_CAPACITY`                    |  Number  | `1000`  | Maximum number of events to accumulate for each flush interval.                                                                                                                                                           |
+| `metricsCapacity`             | `EVENTS_METRICS_CAPACITY`            |  Number  | `10000` | Queue capacity for the usage metrics event publisher, which reports connection usage to LaunchDarkly independently of `capacity`. See note _(9)_.                                                                          |
+| `maxInboundPayloadSize`       | `EVENTS_MAX_INBOUND_PAYLOAD_SIZE`    | Unit     | _(8)_   | Maximum size of an event payload the Relay Proxy will accept from an SDK.                                                                                                                                                 |
+
+_(7)_ See note _(1)_ above. The default value for `eventsUri` is `https://events.launchdarkly.com`.
+_(8)_ The `maxInboundPayloadSize` setting is used to limit the size of the payload that the Relay Proxy will accept from an SDK. This is an optional safety feature to prevent the Relay Proxy from being overwhelmed by a very large payload. The default value is `0B` which provides no restriction on the payload size. The value should be a number followed by a unit: `B` for bytes, `KiB` for kibibytes, `MiB` for mebibytes, `GiB` for gibibytes, `TiB` for tebibytes, `PiB` for pebibytes, or `EiB` for exbibytes. For example, `100MiB` is 100 mebibytes.
+_(9)_ The `metricsCapacity` setting controls the queue for usage metrics events, which report connection usage back to LaunchDarkly and are separate from the analytics events governed by `capacity`. The Relay Proxy emits one usage metrics event per concurrent unique connection on each flush, so this should be set to at least the number of concurrent unique connections you expect a single node to serve. This is the maximum capacity: the default is `10000` and the minimum is `1000` (smaller values are clamped up to `1000` with a warning). The queue is an in-memory buffer held per environment that starts small and grows on demand up to this maximum, so its memory footprint tracks the number of concurrent connections actually served rather than the configured maximum.
+
+_(9)_ The `maxClientRequestBodySize` setting limits how much of a `REPORT` evaluation request body the Relay Proxy will read into memory before decoding the context, protecting the process from memory exhaustion caused by oversized request bodies. It applies to the `evalx` context/user endpoints for client-side, mobile, and server-side SDKs. The default value is `5MiB`. Requests whose body exceeds the limit receive an HTTP `413 Request Entity Too Large` response. Setting a non-positive value (such as `0B`) is rejected at startup; to raise or lower the limit, specify a positive value using the same units as `maxInboundPayloadSize` (for example, `10MiB`).
+
+
+### File section: `[Concurrency]`
+
+This section limits how many SDK *initialization deliveries* the Relay Proxy performs at the same time. An initialization delivery is the full data-set payload that the Relay Proxy serializes and sends when an SDK first connects. The limit protects the Relay Proxy from the memory and egress peaks that a large burst of new or reconnecting SDKs can cause. The limit is disabled by default: the behavior does not change unless you set `maxConcurrent`.
+
+The budget covers the endpoints that send a full data set:
+
+- The server-side streaming endpoints (`/all` and `/sdk/stream`). An FDv2 stream reconnect whose data is already current gets a small up-to-date reply, which is not counted.
+- The FDv2 polling endpoints (`/sdk/poll` and `/sdk/poll/eval`), on the same condition.
+- The FDv1 PHP all-flags poll (`/sdk/flags`).
+
+These endpoints stay outside the budget. They do not send a full data set, or a limit on them would shed usual per-evaluation traffic:
+
+- The single-item PHP lookups (`/sdk/flags/{key}` and `/sdk/segments/{key}`).
+- The `evalx` endpoints, which return evaluated results for one context.
+- The client-side ping streams, which carry no payload.
+- The legacy FDv1 flags-only stream.
+- Deltas and heartbeats on streams that are already initialized.
+
+Know two intentional properties of this scope when you set the budget size. First, the `evalx` endpoints are the initialization path for the client-side and mobile SDKs, so this budget does not protect that path. Second, the budget is one pool that all environments and both protocol generations share, and each credential that a gated endpoint accepts can reach it, including the public client-side IDs. Until isolation is available, a holder of a public client-side ID can occupy the budget, and initialization for every environment can then be delayed, including for the server-side SDKs. Set `maxConcurrent` and `maxQueued` with that in mind. Isolation between principals is a planned follow-up.
+
+| Property in file | Environment var       |   Type   | Default | Description                                                                                                                                                                                                       |
+|------------------|-----------------------|:--------:|:--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `maxConcurrent`  | `INIT_MAX_CONCURRENT` |  Number  | none    | The maximum number of initialization deliveries that may be in progress at the same time. A value of `0`, or no value, disables the limit. The cheap operations — an up-to-date reply, deltas, heartbeats, and single-item lookups — are never counted.            |
+| `maxQueued`      | `INIT_MAX_QUEUED`     |  Number  | `0`     | The maximum number of requests that may wait for a slot when `maxConcurrent` is reached. With a value of `0`, the Relay Proxy sheds an excess request immediately and does not queue it. A queued request waits as long as its client permits; a client that disconnects releases its place immediately, and the SDK tries again on its own backoff schedule. The value has an effect only when `maxConcurrent` is set.                 |
+| `sendTimeout`    | `INIT_SEND_TIMEOUT`   | Duration | `2m`    | The longest time one gated delivery may hold a slot. A throughput floor of approximately 64 KB/s closes a client that stalls or reads more slowly than the floor, long before this cap. The cap applies to a delivery so large that a floor-rate client would need more time than the cap permits (approximately `sendTimeout × 64 KB/s`, which is ~7.5 MiB at the default value), so a client on a very large data set can be cut, and it then reconnects. When the cap expires, the Relay Proxy closes the connection, gets the slot back, and the SDK reconnects. The value has an effect only when `maxConcurrent` is set. |
+
+At startup, the Relay Proxy clamps a value outside the supported range and writes a warning in the log: it clamps `maxConcurrent` to at most 65536, `maxQueued` to at most 1000000, and a `sendTimeout` that is set but smaller than 5 seconds to 5 seconds.
+
+The throughput floor and the cap measure the bytes that the Relay Proxy writes, before compression. A compressed connection puts fewer bytes on the wire for the same written bytes, so compression gives a slow reader more applicable margin against the floor.
+
+When the budget is full, the Relay Proxy sheds a polling request with an HTTP `503` response, and the SDK retries on its own backoff schedule with jitter. For a streaming request, the response has already started, so the Relay Proxy closes the connection instead, and the SDK reconnects with backoff.
+
+
+### File section: `[Environment "NAME"]`
+
+The Relay Proxy allows you to proxy any number of LaunchDarkly environments; there must be at least one. In a configuration file, each of these is a separate section in the format `[Environment "MyEnvName"]`, where `MyEnvName` is a unique identifier for the environment (this does not have to match the environment name on your LaunchDarkly dashboard, but it is recommended to). If you are using environment variables, you will add the `MyEnvName` identifier to the variable name prefix for each property. See examples below.
+
+| Property in file | Environment var               |   Type   | Description                                                                                                                                                                                                                                  |
+|------------------|-------------------------------|:--------:|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `sdkKey`         | `LD_ENV_MyEnvName`            |  String  | Server-side SDK key for the environment. Required.                                                                                                                                                                                           |
+| `mobileKey`      | `LD_MOBILE_KEY_MyEnvName`     |  String  | Mobile key for the environment. Required if you are proxying mobile SDK functionality.                                                                                                                                                       |
+| `envId`          | `LD_CLIENT_SIDE_ID_MyEnvName` |  String  | Client-side ID for the environment. Required if you are proxying client-side JavaScript-based SDK functionality.                                                                                                                             |
+| `secureMode`     | `LD_SECURE_MODE_MyEnvName`    | Boolean  | True if [secure mode](https://docs.launchdarkly.com/sdk/client-side/javascript#secure-mode) should be required for client-side JS SDK connections.                                                                                           |
+| `prefix`         | `LD_PREFIX_MyEnvName`         |  String  | If using a Redis, Consul, or DynamoDB feature store, this string will be added to all database keys to distinguish them from any other environments that are using the database.                                                             |
+| `tableName`      | `LD_TABLE_NAME_MyEnvName`     |  String  | If using DynamoDB, you can specify a different table for each environment. (Or, specify a single table in the `[DynamoDB]` section and use `prefix` to distinguish the environments.)                                                        |
+| `allowedOrigin`  | `LD_ALLOWED_ORIGIN_MyEnvName` |   URI    | If provided, adds CORS headers to prevent access from other domains. This variable can be provided multiple times per environment (if using the `LD_ALLOWED_ORIGIN_MyEnvName` variable, specify a comma-delimited list).                     |
+| `allowedHeader`  | `LD_ALLOWED_HEADER_MyEnvName` |  String  | If provided, adds the specify headers to the list of accepted headers for CORS requests. This variable can be provided multiple times per environment (if using the `LD_ALLOWED_HEADER_MyEnvName` variable, specify a comma-delimited list). |
+| `logLevel`       | `LD_LOG_LEVEL_MyEnvName`      |  String  | Should be `debug`, `info`, `warn`, `error`, or `none`. Read: [Logging](./logging.md).**                                                                                                                                                      |
+| `ttl`            | `LD_TTL_MyEnvName`            | Duration | HTTP caching TTL for the PHP polling endpoints. Read: [Using PHP](./php.md).                                                                                                                                                               |                                                                                                                                                              |
+| `projKey`        | `LD_PROJ_KEY_MyEnvName`       |  String  | Project key for this environment. Required if any filters are defined. Filtering is an Enterprise-only feature.                                                                                                                              |
+
+In the following examples, there are two environments, each of which has a server-side SDK key and a mobile key. Debug-level logging is enabled for the second one.
+
+```
+# Configuration file example
+
+[Environment "Spree Project Production"]
+    sdkKey = "SPREE_PROD_SDK_KEY"
+    mobileKey = "SPREE_PROD_MOBILE_KEY"
+
+[Environment "Spree Project Test"]
+    sdkKey = "SPREE_TEST_SDK_KEY"
+    mobileKey = "SPREE_TEST_MOVILE_KEY"
+    logLevel = "debug"
+```
+
+```
+# Environment variables example
+
+LD_ENV_Spree_Project_Production=SPREE_PROD_SDK_KEY
+LD_MOBILE_KEY_Spree_Project_Production=SPREE_PROD_MOBILE_KEY
+LD_ENV_Spree_Project_Test=SPREE_TEST_SDK_KEY
+LD_MOBILE_KEY_Spree_Project_Test=SPREE_TEST_MOBILE_KEY
+```
+
+### File section: `[Filters "PROJECT-KEY"]`
+
+To learn more, read [Filters](TBD).
+
+
+| Property in file | Environment var            |  Type   | Default | Description                                                                                                                                                                                                                         |
+|------------------|----------------------------|:-------:|:--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `keys`           | `LD_FILTER_KEYS_MyProjKey` | String  |         | Specify one or more filter keys for this project _(1)_. This variable can be provided multiple times, or specified using a comma-delimited list (if using the `LD_FILTER_KEYS_MyProjKey` variable, specify a comma-delimited list.) |
+
+_(1)_ SDKs may request filtered environments identified by any of these keys, as well as the default unfiltered environment.
+
+### File section: `[Redis]`
+
+To learn more, read [Persistent storage](./persistent-storage.md).
+
+| Property in file | Environment var  |   Type   | Default     | Description                                                                                                                                                                                    |
+|------------------|------------------|:--------:|:------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| n/a              | `USE_REDIS`      | Boolean  | `false`     | If you are using environment variables, set this to enable Redis.                                                                                                                              |
+| `host`           | `REDIS_HOST`     |  String  | `localhost` | Hostname of the Redis database. Redis is enabled if this or `url` is set.                                                                                                                      |
+| `port`           | `REDIS_PORT`     |  Number  | `6379`      | Port of the Redis database. Note that if you are using environment variables, setting `REDIS_PORT` to a string like `tcp://host:port` sets both the host and the port; this is used in Docker. |
+| `url`            | `REDIS_URL`      |  String  |             | URL of the Redis database (overrides `host` & `port`).                                                                                                                                         |
+| `tls`            | `REDIS_TLS`      | Boolean  | `false`     | If `true`, will use a secure connection to Redis (not all Redis servers support this). If you specified a `redis://` URL, setting `tls` to `true` will change it to `rediss://`.               |
+| `password`       | `REDIS_PASSWORD` |  String  |             | Optional password if Redis requires authentication.                                                                                                                                             |
+| `username`       | `REDIS_USERNAME` |  String  |             | Optional username if Redis requires authentication.                                                                                                                                            |
+| `localTtl`       | `CACHE_TTL`      | Duration | `30s`       | Length of time that database items can be cached in memory.                                                                                                                                    |
+
+Note that the TLS and password options can also be specified as part of the URL: `rediss://` instead of `redis://` 
+enables TLS, and `redis://:password@host` or `redis://user:password@host` instead of `redis://host` sets an (optional) 
+username and password.
+
+You may want to use the separate options instead if, for instance, you want your configuration file to contain the basic 
+Redis configuration, but for security reasons you would rather set the password in an environment variable (`REDIS_PASSWORD`).
+
+
+### File section: `[DynamoDB]`
+
+To learn more, read [Persistent storage](./persistent-storage.md).
+
+| Property in file | Environment var  |   Type   | Default | Description                                                                                                                                                                                                                                                                |
+|------------------|------------------|:--------:|:--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `enabled`        | `USE_DYNAMODB`   | Boolean  | `false` | Enables DynamoDB.                                                                                                                                                                                                                                                          |
+| `tableName`      | `DYNAMODB_TABLE` |  String  |         | The DynamoDB table name, if you are using the same table for all environments. Otherwise, omit this and specify it in each environment section. (Note, credentials and region are controlled by the usual AWS environment variables and/or local AWS configuration files.) |
+| `url`            | `DYNAMODB_URL`   |  String  |         | The service endpoint if you are using a local DynamoDB instance instead of the regular service.                                                                                                                                                                            |
+| `localTtl`       | `CACHE_TTL`      | Duration | `30s`   | Length of time that database items can be cached in memory.                                                                                                                                                                                                                |
+
+The AWS credentials and region for DynamoDB are not part of the Relay configuration; they should be set using either the standard AWS environment variables or a local AWS configuration file, as documented for [the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html).
+
+
+### File section: `[Consul]`
+
+To learn more, read [Persistent storage](./persistent-storage.md).
+
+| Property in file | Environment var     |   Type   | Default     | Description                                                                                                                            |
+|------------------|---------------------|:--------:|:------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| n/a              | `USE_CONSUL`        | Boolean  | `false`     | If you are using environment variables, set this to enable Consul.                                                                     |
+| `host`           | `CONSUL_HOST`       |  String  | `localhost` | Hostname of the Consul server. Consul is enabled if this is set.                                                                       |
+| `token`          | `CONSUL_TOKEN`      |  String  |             | ACL token, if the Consul server is configured with ACLs.                                                                               |
+| `tokenFile`      | `CONSUL_TOKEN_FILE` |  String  |             | If you would prefer to keep your ACL token in a separate file rather than in the Relay Proxy configuration, set this to the file path. |
+| `localTtl`       | `CACHE_TTL`         | Duration | `30s`       | Length of time that database items can be cached in memory.                                                                            |
+
+### File section: `[OpenTelemetry]`
+
+To learn more, read [Metrics](./metrics.md).
+
+| Property in file | Environment var                |  Type   | Default | Description                                                                                                                                                                                                        |
+|------------------|--------------------------------|:-------:|:--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `enabled`        | `USE_OTLP`                     | Boolean | `false` | If true, enables exporting metrics via OTLP.                                                                                                                                                                       |
+| `protocol`       | `OTEL_EXPORTER_OTLP_PROTOCOL` | String  |         | The OTLP transport protocol. Must be `grpc` or `http`.                                                                                                                                                             |
+| `metricsCardinalityLimit` | `OTEL_METRICS_CARDINALITY_LIMIT` | Int | `2000` | The maximum number of distinct attribute sets recorded for a single metric instrument in one export cycle. Set to `0` for no limit. To learn more, read [Metrics](./metrics.md). |
+
+All other OTLP configuration — including endpoint, headers, TLS, compression, timeouts, and service name — is handled by standard [OpenTelemetry environment variables](https://opentelemetry.io/docs/specs/otel/protocol/exporter/). The OpenTelemetry SDK reads these directly from the environment. Commonly used variables include:
+
+| Environment var                          | Description                                                                                                    |
+|------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `OTEL_SERVICE_NAME`                      | The service name reported in exported telemetry. If not set, defaults to `ld-relay`.                           |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`           | The OTLP endpoint to export metrics to. Example: `http://otel-collector:4317`                                  |
+| `OTEL_EXPORTER_OTLP_HEADERS`            | Headers to include in OTLP export requests, as `key=value` pairs. Example: `api-key=secret,env=prod`          |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`            | Max time (in milliseconds) for each export. Default: `10000`.                                                  |
+| `OTEL_EXPORTER_OTLP_COMPRESSION`        | Compression type (`gzip` or `none`).                                                                           |
+| `OTEL_METRIC_EXPORT_INTERVAL`           | Time (in milliseconds) between metric exports. Default: `60000`.                                               |
+| `OTEL_METRIC_EXPORT_TIMEOUT`            | Max time (in milliseconds) allowed for each metric export. Default: `30000`.                                   |
+| `OTEL_RESOURCE_ATTRIBUTES`              | Additional resource attributes as `key=value` pairs.                                                           |
+
+Signal-specific overrides (e.g. `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) take precedence over the general variables. See the [OpenTelemetry specification](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) for the full list.
+
+### File section: `[Proxy]`
+
+| Property in file | Environment var       |  Type   | Default | Description                                                                                                                                                                                                                                                                       |
+|------------------|-----------------------|:-------:|:--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `url`            | `PROXY_URL`           | String  |         | All Relay Proxy network traffic will be sent through this HTTP proxy if specified.                                                                                                                                                                                                |
+| `user`           | `PROXY_AUTH_USER`     | String  |         | Username for proxy authentication, if applicable.                                                                                                                                                                                                                                 |
+| `password`       | `PROXY_AUTH_PASSWORD` | String  |         | Password for proxy authentication, if applicable.                                                                                                                                                                                                                                 |
+| `domain`         | `PROXY_AUTH_DOMAIN`   | String  |         | Domain name for proxy authentication, if applicable.                                                                                                                                                                                                                              |
+| `caCertFiles`    | `PROXY_CA_CERTS`      | String  |         | List of file paths to additional CA certificates that should be trusted (in PEM format). For multiple files, if using a configuration file, you can specify `caCertFiles` multiple times; if using environment variables, you can set `PROXY_CA_CERTS` to a comma-delimited list. |
+| `ntlmAuth`       | `PROXY_AUTH_NTLM`     | Boolean | `false` | Enables NTLM proxy authentication (requires user, password, and domain).                                                                                                                                                                                                          |
+
+### File section: `[Http]`
+
+| Property in file | Environment var        |  Type   | Default | Description                                                                                                 |
+|------------------|------------------------|:-------:|:--------|-------------------------------------------------------------------------------------------------------------|
+| `enableCompression` | `HTTP_ENABLE_COMPRESSION` | Boolean | `false` | When enabled, the Relay Proxy will compress HTTP responses using gzip compression. This can reduce bandwidth usage but may increase CPU usage. |
+| `idleConnTimeout` | `HTTP_IDLE_CONN_TIMEOUT` | Duration |  | Maximum amount of time an idle (keep-alive) HTTP connection will remain idle before closing. Examples: `30s`, `5m`. If not set, uses Go's default of 90 seconds. Reducing this can help prevent EOF errors when intermediate load balancers or NAT gateways close idle connections. |
+| `maxIdleConns` | `HTTP_MAX_IDLE_CONNS` | Integer |  | Maximum number of idle (keep-alive) HTTP connections across all hosts. If not set, uses Go's default of 100. Increase this value for high-concurrency scenarios with many environments. |
+| `maxIdleConnsPerHost` | `HTTP_MAX_IDLE_CONNS_PER_HOST` | Integer |  | Maximum number of idle (keep-alive) HTTP connections to keep per-host. If not set, uses Go's default of 2. Increase this if you have multiple environments connecting to the same LaunchDarkly endpoints. |
+| `disableKeepAlives` | `HTTP_DISABLE_KEEPALIVE` | Boolean | `false` | When enabled, disables HTTP keep-alive connections. This forces the relay to use a new connection for each HTTP request. Use this only for debugging connection issues, as it significantly increases overhead. |
+
+### Experimental/testing variables
+
+The current version of the Relay Proxy also supports the following environment variables. These do not have an equivalent in a configuration file; they are not intended for production use; and they are not guaranteed to work in any other Relay Proxy versions.
+
+| Environment var             |  Type   | Default | Description                                                                                                                                                                                                                                                                                                                                                                                  |
+|-----------------------------|:-------:|:--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LD_TRACE_LOG_BIG_SEGMENTS` | Boolean | `false` | Enables extra logging at `debug` level, even more verbose than `debug` level normally is, specifically for big segments data. Use this with extreme caution since it may log detailed transactions for big segments which could potentially include millions of users. This option is intended only for debugging issues related to big segments under the guidance of LaunchDarkly support. |

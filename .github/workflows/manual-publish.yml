@@ -1,0 +1,109 @@
+name: Publish Images and Artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip publishing to DockerHub'
+        type: boolean
+        required: false
+        default: true
+      update_major_tag:
+        description: "Should vX.Y.Z be tagged as 'vX' in Dockerhub?"
+        type: boolean
+        required: false
+        default: false
+      update_latest_tag:
+        description: "Should vX.Y.Z be tagged as 'latest' in Dockerhub?"
+        type: boolean
+        required: false
+        default: false
+      tag:
+        description: 'Tag of an existing draft release to upload binary artifacts to.'
+        type: string
+        required: true
+      publish_release:
+        description: 'Publish (un-draft) the release after all artifacts are uploaded?'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  go-versions:
+    uses: ./.github/workflows/go-versions.yml
+
+  build-publish:
+    needs: go-versions
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Needed to get Docker tokens during publishing and to sign attestations
+      contents: write # Needed to upload release artifacts
+      attestations: write # Needed for artifact attestations
+    outputs:
+      images_and_digests: ${{ steps.publish.outputs.images_and_digests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go ${{ needs.go-versions.outputs.latest }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.go-versions.outputs.latest }}
+      - uses: launchdarkly/gh-actions/actions/persistent-stores@persistent-stores-v0.2.0
+        with:
+          dynamodb: true
+          redis: true
+      - name: Build and Test
+        uses: ./.github/actions/unit-tests
+      - name: 'Get Docker token'
+        uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/global/services/docker/public/username = DOCKER_USERNAME, /global/services/docker/public/token = DOCKER_TOKEN'
+      - name: Publish Package
+        id: publish
+        uses: ./.github/actions/publish
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: ${{ inputs.dry_run }}
+          tag: ${{ inputs.tag }}
+          update-major-tag: ${{ inputs.update_major_tag }}
+          update-latest-tag: ${{ inputs.update_latest_tag }}
+
+      - name: Attest binary artifacts
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest@v4
+        with:
+          subject-checksums: ${{ steps.publish.outputs.checksum_file }}
+
+  attest-image-provenance:
+    needs: ['build-publish']
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        images_and_digests: ${{fromJson(needs.build-publish.outputs.images_and_digests)}}
+    steps:
+      - name: Attest container image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ matrix.images_and_digests.image }}
+          subject-digest: ${{ matrix.images_and_digests.digest }}
+
+  publish-release:
+    needs: ['build-publish', 'attest-image-provenance']
+    if: ${{ !inputs.dry_run && inputs.publish_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: >
+          gh release edit "$TAG_NAME"
+          --repo ${{ github.repository }}
+          --draft=false

@@ -1,0 +1,52 @@
+version: "2"
+run:
+  tests: false
+linters:
+  enable:
+    - bodyclose
+    - dupl
+    - gochecknoglobals
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - godox
+    - gosec
+    - misspell
+    - nakedret
+    - nolintlint
+    - prealloc
+    - staticcheck
+    - unconvert
+    - unparam
+    - whitespace
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - staticcheck
+        path: integrationtests
+      - linters:
+          - gochecknoglobals
+        path: internal/metrics/measures.go
+      - linters:
+          - bodyclose
+          - gochecknoglobals
+          - goconst
+        path: internal/sharedtest/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 1000
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

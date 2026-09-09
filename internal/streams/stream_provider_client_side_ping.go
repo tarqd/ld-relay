@@ -1,0 +1,137 @@
+package streams
+
+import (
+	"log/slog"
+	"net/http"
+	"sync"
+
+	"github.com/launchdarkly/ld-relay/v9/internal/sdkauth"
+
+	"github.com/launchdarkly/ld-relay/v9/internal/credential"
+
+	"github.com/launchdarkly/ld-relay/v9/config"
+
+	"github.com/launchdarkly/eventsource"
+	"github.com/launchdarkly/go-server-sdk/v7/subsystems"
+)
+
+// This is the standard implementation of a stream for client-side/mobile SDKs that sends only "ping" events,
+// and does not do flag evaluations for specific users. The behavior of this stream is that it sends one "ping"
+// event on initial connection, and another "ping" every time there is a data update of any kind.
+type clientSidePingStreamProvider struct {
+	fdv1Server *eventsource.Server
+	fdv2Server *eventsource.Server
+	isJSClient bool
+	closeOnce  sync.Once
+}
+
+type clientSidePingEnvStreamProvider struct {
+	server   *eventsource.Server
+	channels []string
+}
+
+type clientSidePingEnvStreamRepository struct {
+	store EnvStoreQueries
+}
+
+func (s *clientSidePingStreamProvider) validateCredential(credential credential.SDKCredential) bool {
+	if s.isJSClient {
+		if _, ok := credential.(config.EnvironmentID); ok {
+			return true
+		}
+	} else {
+		if _, ok := credential.(config.MobileKey); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *clientSidePingStreamProvider) HandlerV1(credential sdkauth.ScopedCredential) http.HandlerFunc {
+	if !s.validateCredential(credential.SDKCredential) {
+		return nil
+	}
+	return s.fdv1Server.Handler(credential.String())
+}
+
+func (s *clientSidePingStreamProvider) HandlerV2(credential sdkauth.ScopedCredential) http.HandlerFunc {
+	if !s.validateCredential(credential.SDKCredential) {
+		return nil
+	}
+	return s.fdv2Server.Handler(credential.String())
+}
+
+func (s *clientSidePingStreamProvider) RegisterV1(
+	credential sdkauth.ScopedCredential,
+	store EnvStoreQueries,
+	_ *slog.Logger,
+) EnvStreamProvider {
+	if !s.validateCredential(credential.SDKCredential) {
+		return nil
+	}
+	repo := &clientSidePingEnvStreamRepository{store: store}
+	s.fdv1Server.Register(credential.String(), repo)
+	envStream := &clientSidePingEnvStreamProvider{server: s.fdv1Server, channels: []string{credential.String()}}
+	return envStream
+}
+
+func (s *clientSidePingStreamProvider) RegisterV2(
+	credential sdkauth.ScopedCredential,
+	store EnvStoreQueries,
+	_ *slog.Logger,
+) EnvStreamProvider {
+	if !s.validateCredential(credential.SDKCredential) {
+		return nil
+	}
+	repo := &clientSidePingEnvStreamRepository{store: store}
+	s.fdv2Server.Register(credential.String(), repo)
+	envStream := &clientSidePingEnvStreamProvider{server: s.fdv2Server, channels: []string{credential.String()}}
+	return envStream
+}
+
+func (s *clientSidePingStreamProvider) Close() {
+	s.closeOnce.Do(func() {
+		s.fdv1Server.Close()
+		s.fdv2Server.Close()
+	})
+}
+
+func (e *clientSidePingEnvStreamProvider) Apply(changeSet subsystems.ChangeSet) {
+	switch changeSet.IntentCode() {
+	case subsystems.IntentTransferFull:
+		e.SetBasis(changeSet.Changes(), changeSet.Selector())
+	case subsystems.IntentTransferChanges:
+		e.ApplyDelta(changeSet.Changes(), changeSet.Selector())
+	}
+}
+
+func (e *clientSidePingEnvStreamProvider) SetBasis(events []subsystems.Change, selector subsystems.Selector) {
+	e.server.Publish(e.channels, MakePingEvent())
+}
+
+func (e *clientSidePingEnvStreamProvider) ApplyDelta(events []subsystems.Change, selector subsystems.Selector) {
+	e.server.Publish(e.channels, MakePingEvent())
+}
+
+func (e *clientSidePingEnvStreamProvider) InvalidateClientSideState() {
+	e.server.Publish(e.channels, MakePingEvent())
+}
+
+func (e *clientSidePingEnvStreamProvider) SendHeartbeat() {
+	e.server.PublishComment(e.channels, "")
+}
+
+func (e *clientSidePingEnvStreamProvider) Close() {
+	for _, key := range e.channels {
+		e.server.Unregister(key, true)
+	}
+}
+
+func (r *clientSidePingEnvStreamRepository) Replay(channel, id string) chan eventsource.Event {
+	out := make(chan eventsource.Event, 1)
+	if r.store.IsInitialized() { // See serverSideEnvStreamRepository.Replay
+		out <- MakePingEvent()
+	}
+	close(out)
+	return out
+}
